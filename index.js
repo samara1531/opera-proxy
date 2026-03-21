@@ -128,7 +128,7 @@ async function main() {
     }
 
     // Output for GitHub Actions
-    console.log(JSON.stringify({ include: matrix }));
+    console.log(JSON.stringify({ include: matrix }, null, 2));
   } catch (err) {
     console.error('Error:', err.message || err);
     process.exit(1);
