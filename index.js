@@ -44,29 +44,25 @@ async function getSubtargets(target) {
 async function getPkgarch(target, subtarget) {
   const baseTargetUrl = `${baseUrl}${target}/${subtarget}/`;
 
-  // 1) Try index.json (primary source)
+  // 1) Try index.json
   const indexUrl = `${baseTargetUrl}packages/index.json`;
   try {
     const json = await fetchJSON(indexUrl);
     if (json && typeof json.architecture === 'string') {
       return [json.architecture];
     }
-  } catch {
-    // index.json not found, continue
-  }
+  } catch {}
 
-  // 2) Try profiles.json (secondary source)
+  // 2) Try profiles.json
   const profilesUrl = `${baseTargetUrl}profiles.json`;
   try {
     const json = await fetchJSON(profilesUrl);
-    if (json && typeof json.arch_packages !== 'undefined') {
+    if (json && json.arch_packages) {
       return Array.isArray(json.arch_packages) ? json.arch_packages : [json.arch_packages];
     }
-  } catch {
-    // profiles.json not found, continue
-  }
+  } catch {}
 
-  // 3) Fallback: parse .ipk packages
+  // 3) Fallback
   return [await getPkgarchFallback(target, subtarget)];
 }
 
@@ -89,8 +85,8 @@ async function getPkgarchFallback(target, subtarget) {
       }
     });
 
-    // fallback: if nothing found, try kernel_*
     if (pkgarch === 'unknown') {
+      // fallback: try kernel_*
       $('a').each((i, el) => {
         const name = $(el).attr('href');
         if (name && name.startsWith('kernel_')) {
@@ -110,6 +106,11 @@ async function getPkgarchFallback(target, subtarget) {
 async function main() {
   try {
     const targets = await getTargets();
+    if (!targets.length) {
+      console.error('No targets found, exiting.');
+      process.exit(1);
+    }
+
     const matrix = [];
     const seen = new Set();
 
@@ -127,8 +128,9 @@ async function main() {
       }
     }
 
-    // Output for GitHub Actions
-    console.log(JSON.stringify({ include: matrix }, null, 2));
+    // --- Output for GitHub Actions ---
+    // Must be: { "include": [ ... ] }
+    console.log(JSON.stringify({ include: matrix }));
   } catch (err) {
     console.error('Error:', err.message || err);
     process.exit(1);
