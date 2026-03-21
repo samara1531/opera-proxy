@@ -1,120 +1,156 @@
-name: Build opera-proxy for all OpenWrt targets
+name: Push-Multi-Target Build Opera-Proxy
 
 on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: "OpenWrt version (e.g., 23.05.5, 25.12.1, SNAPSHOT)"
+        description: "OpenWrt version"
         required: true
         default: "25.12.1"
-      opera_proxy_ref:
-        description: "opera‑proxy branch/tag/commit"
+      compile_go:
+        description: "Compile Go implementation"
         required: true
-        default: "master"
+        type: boolean
+        default: false
 
 jobs:
-  build:
+  generate-matrix:
     runs-on: ubuntu-22.04
-
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
-      with:
-        ref: ${{ github.event.inputs.opera_proxy_ref }}
-        path: opera-proxy
+      - uses: actions/checkout@v5
 
-    - name: Install deps
-      run: |
-        sudo apt update
-        sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd curl jq
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
 
-    - name: Determine package format
-      id: pkg
-      run: |
-        VERSION="${{ github.event.inputs.openwrt_version }}"
-        if [ "$VERSION" = "SNAPSHOT" ] || echo "$VERSION" | grep -q '^25\.12\.' ; then
-          echo "ext=apk" >> $GITHUB_OUTPUT
-        else
-          echo "ext=ipk" >> $GITHUB_OUTPUT
-        fi
+      - name: Install Node.js dependencies
+        run: |
+          echo "Cleaning npm cache..."
+          npm cache clean --force
+          npm install
 
-    - name: List targets and subtargets
-      run: |
-        VERSION="${{ github.event.inputs.openwrt_version }}"
-        BASE="https://downloads.openwrt.org/releases/${VERSION}/targets/"
-        
-        mkdir -p targets
-        curl -s "$BASE" \
-          | grep -oP 'href="\K[^"/]+(?=/")' > targets/targets.txt
-        
-        echo "Targets found:"
-        cat targets/targets.txt
-        
-        mkdir -p subtargets
-        while read T; do
-          curl -s "${BASE}${T}/" \
-            | grep -oP 'href="\K[^"/]+(?=/")' > subtargets/${T}.txt
-        done < targets/targets.txt
+      - name: Generate build matrix
+        id: set-matrix
+        run: |
+          MATRIX=$(node .github/scripts/gen-matrix.js "${{ github.event.inputs.openwrt_version }}")
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
 
-    - name: Build all targets
-      run: |
-        VERSION="${{ github.event.inputs.openwrt_version }}"
-        EXT="${{ steps.pkg.outputs.ext }}"
+  build-opera-proxy:
+    needs: generate-matrix
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: opera-proxy
 
-        while read TARGET; do
-          while read SUB; do
-            echo "=== Building for $TARGET / $SUB ==="
+      - name: Checkout OpenWRT Packages repository
+        uses: actions/checkout@v5
+        with:
+          path: packages
+          repository: openwrt/packages
+          fetch-depth: 0
 
-            BASE_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}/${SUB}/"
-            SDK_NAME=$(curl -s "${BASE_URL}" \
-              | grep -oP 'openwrt-sdk[^"]+\.(tar\.xz|tar\.zst)' \
-              | head -n1)
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pyelftools python3-dev python3-setuptools swig curl zip zstd jq unzip build-essential libelf-dev
 
-            if [ -z "$SDK_NAME" ]; then
-              echo "No SDK found, skipping $TARGET/$SUB"
-              continue
-            fi
+      - name: Download and prepare SDK
+        env:
+          compile_go: ${{ inputs.compile_go }}
+        run: |
+          set -e -x
+          VERSION="${{ github.event.inputs.openwrt_version }}"
+          TARGET="${{ matrix.target }}"
+          SUBTARGET="${{ matrix.subtarget }}"
 
-            echo "Found SDK: $SDK_NAME"
-            wget -q "${BASE_URL}${SDK_NAME}"
+          if [ "$VERSION" = "SNAPSHOT" ]; then
+              MIRRORS=("https://downloads.openwrt.org/snapshots/targets/$TARGET/$SUBTARGET")
+          else
+              MIRRORS=(
+                  "https://downloads.openwrt.org/releases/$VERSION/targets/$TARGET/$SUBTARGET"
+                  "https://mirror-03.infra.openwrt.org/releases/$VERSION/targets/$TARGET/$SUBTARGET"
+                  "https://mirror-01.infra.openwrt.org/releases/$VERSION/targets/$TARGET/$SUBTARGET"
+                  "https://mirror-02.infra.openwrt.org/releases/$VERSION/targets/$TARGET/$SUBTARGET"
+                  "https://mirror-04.infra.openwrt.org/releases/$VERSION/targets/$TARGET/$SUBTARGET"
+              )
+          fi
 
-            tar_opts="xf"
-            if echo "$SDK_NAME" | grep -q '\.zst$'; then
-              tar_opts="--use-compress-program=unzstd -xf"
-            fi
+          sdk_url=""
+          for BASE_URL in "${MIRRORS[@]}"; do
+              sdk_url=$(curl -fsSL "$BASE_URL" | grep -oP 'openwrt-sdk[^<"]+\.(tar\.zst|tar\.xz)' | head -n1)
+              if [[ -n "$sdk_url" ]]; then
+                  echo "SDK found at $BASE_URL/$sdk_url"
+                  break
+              fi
+          done
 
-            tar $tar_opts "$SDK_NAME"
-            mv openwrt-sdk* openwrt
+          if [[ -z "$sdk_url" ]]; then
+              echo "⚠️ SDK file not found on any mirror"
+              exit 1
+          fi
 
-            mkdir -p openwrt/package/opera-proxy
-            cp opera-proxy/openwrt-package/Makefile openwrt/package/opera-proxy/
+          curl -fsLO --location "$BASE_URL/$sdk_url"
+          file_name=$(basename "$sdk_url")
+          tar -xf "$file_name"
+          rm -f *.tar.zst *.tar.xz
+          mv openwrt-sdk* openwrt
 
-            mkdir -p openwrt/dl
-            mkdir -p temp/opera-proxy-1.15.0
-            rsync -a --exclude=.git opera-proxy/ temp/opera-proxy-1.15.0/
-            tar -czf openwrt/dl/opera-proxy-1.15.0.tar.gz -C temp .
-            rm -rf temp
+          echo "src-cpy opera-proxy ../opera-proxy" >> openwrt/feeds.conf.default
 
-            cd openwrt
-            ./scripts/feeds update -a
-            ./scripts/feeds install golang
+          git config --global http.version HTTP/1.1
+          git config --global http.postBuffer 524288000
+          git config --global core.compression 0
 
-            make defconfig
-            echo "CONFIG_PACKAGE_opera-proxy=y" >> .config
-            make oldconfig
+          ./openwrt/scripts/feeds update -a
+          ./openwrt/scripts/feeds install -a
+          make -C openwrt defconfig
 
-            make package/opera-proxy/compile -j$(nproc) V=s
-            cd ..
+      - name: Compile Opera-Proxy
+        env:
+          compile_go: ${{ inputs.compile_go }}
+        continue-on-error: true
+        run: |
+          cd openwrt
+          set +e
+          make package/opera-proxy/{clean,download,prepare,compile} -j$(nproc)
+          STATUS=$?
+          if [ "$compile_go" = "true" ]; then
+            make package/opera-proxy-go/{clean,download,prepare,compile} -j$(nproc) || echo "opera-proxy-go failed — continuing"
+          fi
+          if [ $STATUS -ne 0 ]; then
+            echo "⚠️ Build failed"
+            exit 1
+          fi
+          echo "✅ Build successful"
 
-            mkdir -p artifacts/$TARGET/$SUB
-            cp openwrt/bin/packages/**/opera-proxy*.$EXT artifacts/$TARGET/$SUB/ 2>/dev/null || true
+      - name: Upload release assets
+        run: |
+          mkdir -p artifacts
+          find "openwrt/bin/targets/${{ matrix.target }}/${{ matrix.subtarget }}/packages" \
+            -type f -name 'opera-proxy*' -exec cp {} artifacts/ \; 2>/dev/null || true
+          find "openwrt/bin/packages" \
+            -type f -name 'opera-proxy*' -exec cp {} artifacts/ \; 2>/dev/null || true
 
-            rm -rf openwrt "$SDK_NAME"
-          done < subtargets/${TARGET}.txt
-        done < targets/targets.txt
+          ZIP_NAME="OpenWRT-opera-proxy-${{ github.event.inputs.openwrt_version }}-${{ matrix.target }}-${{ matrix.subtarget }}.zip"
 
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: opera-proxy-packages
-        path: artifacts/
+          if [ "$(ls -A artifacts)" ]; then
+            zip -r "$ZIP_NAME" artifacts
+            gh release create "${{ github.event.inputs.openwrt_version }}" \
+              --title "OpenWRT Opera-Proxy ${{ github.event.inputs.openwrt_version }}" \
+              --notes "opera-proxy packages" \
+              --repo "${{ github.repository }}" || echo "Release already exists"
+            gh release upload "${{ github.event.inputs.openwrt_version }}" "$ZIP_NAME" \
+              --clobber \
+              --repo "${{ github.repository }}"
+          else
+            echo "⚠️ Packages not found, ZIP not created"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
