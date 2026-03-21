@@ -6,7 +6,7 @@ on:
       openwrt_version:
         description: "OpenWrt version (25.12.1 or SNAPSHOT)"
         required: true
-        default: "SNAPSHOT"
+        default: "25.12.1"
       opera_proxy_ref:
         description: "opera-proxy branch/tag/commit"
         required: true
