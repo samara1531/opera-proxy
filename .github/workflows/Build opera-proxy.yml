@@ -20,7 +20,6 @@ jobs:
       - name: Checkout opera-proxy repository
         uses: actions/checkout@v4
         with:
-          path: opera-proxy
           ref: ${{ inputs.opera_proxy_ref }}
           fetch-depth: 0
 
@@ -36,6 +35,7 @@ jobs:
         id: set-matrix
         run: |
           VERSION="${{ inputs.openwrt_version }}"
+          # Запускаем node → stdout = чистый JSON, stderr → файл отладки
           node index.js "$VERSION" > matrix.json 2> debug.log || echo '{"include":[]}' > matrix.json
           MATRIX=$(cat matrix.json)
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
@@ -60,7 +60,6 @@ jobs:
       - name: Checkout opera-proxy (again, for build)
         uses: actions/checkout@v4
         with:
-          path: opera-proxy
           ref: ${{ inputs.opera_proxy_ref }}
           fetch-depth: 0
 
@@ -105,10 +104,10 @@ jobs:
       - name: Prepare opera-proxy package directory
         run: |
           echo "=== Диагностика структуры ==="
-          ls -la opera-proxy/ || true
-          ls -la opera-proxy/openwrt-package/ 2>/dev/null || echo "openwrt-package not found"
+          ls -la . || true
+          ls -la openwrt-package/ 2>/dev/null || echo "openwrt-package not found"
           mkdir -p openwrt/package/opera-proxy
-          SOURCE_DIR="opera-proxy/openwrt-package"
+          SOURCE_DIR="openwrt-package"
           if [ -f "$SOURCE_DIR/Makefile" ]; then
             cp "$SOURCE_DIR/Makefile" openwrt/package/opera-proxy/
             echo "Makefile copied"
@@ -122,12 +121,12 @@ jobs:
       - name: Create source tarball
         run: |
           set -e -x
-          # Берём версию динамически из твоего Makefile (чтобы не было расхождений)
+          # Берём версию динамически из Makefile
           PKG_VERSION=$(grep -oP 'PKG_VERSION:=\K[^[:space:]]+' openwrt/package/opera-proxy/Makefile || echo "1.15.0")
-          echo "Detected PKG_VERSION for source tarball: ${PKG_VERSION}"
+          echo "Detected PKG_VERSION: ${PKG_VERSION}"
 
           mkdir -p openwrt/dl temp/opera-proxy-${PKG_VERSION}
-          rsync -av --exclude=.git --exclude=openwrt-package opera-proxy/ temp/opera-proxy-${PKG_VERSION}/
+          rsync -av --exclude=.git --exclude=openwrt-package ./ temp/opera-proxy-${PKG_VERSION}/
           tar -czf openwrt/dl/opera-proxy-${PKG_VERSION}.tar.gz -C temp opera-proxy-${PKG_VERSION}
           rm -rf temp
           echo "Source tarball created: openwrt/dl/opera-proxy-${PKG_VERSION}.tar.gz"
