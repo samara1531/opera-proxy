@@ -3,139 +3,153 @@ const cheerio = require('cheerio');
 
 const version = process.argv[2];
 if (!version) {
-  console.error('Version argument is required (SNAPSHOT или 25.12.1)');
+  console.error('Version argument is required');
   process.exit(1);
 }
 
+// Для релизов используем releases, для SNAPSHOT — snapshots
+// Но если SNAPSHOT тебе не нужен — можно убрать эту ветку
 const isSnapshot = version.toUpperCase() === 'SNAPSHOT';
 const baseUrl = isSnapshot
   ? 'https://downloads.openwrt.org/snapshots/targets/'
   : `https://downloads.openwrt.org/releases/${version}/targets/`;
 
-console.error(`[index.js] Base URL: ${baseUrl}`);
+console.error(`Using base URL: ${baseUrl}`);
 
-// --- Helpers ---
+// --- HTTP helpers ---
 async function fetchHTML(url) {
   try {
-    const { data } = await axios.get(url, { timeout: 20000 });
+    const { data } = await axios.get(url);
     return cheerio.load(data);
-  } catch (e) {
-    console.error(`[index.js] Failed HTML: ${url}`);
+  } catch (err) {
+    console.error(`fetchHTML error: ${url} → ${err.message}`);
     return null;
   }
 }
 
 async function fetchJSON(url) {
   try {
-    const { data } = await axios.get(url, { timeout: 10000 });
+    const { data } = await axios.get(url);
     return data;
-  } catch (e) {
+  } catch {
     return null;
   }
 }
 
-// --- Get targets ---
+// --- Get target folders ---
 async function getTargets() {
   const $ = await fetchHTML(baseUrl);
   if (!$) return [];
-  const targets = $('a')
-    .map((_, el) => $(el).attr('href'))
+  return $('table tr td.n a')
+    .map((i, el) => $(el).attr('href'))
     .get()
-    .filter(h => h && h.endsWith('/') && h !== '../')
-    .map(h => h.slice(0, -1));
-  console.error(`[index.js] Found ${targets.length} targets`);
-  return targets;
+    .filter(href => href && href.endsWith('/'))
+    .map(href => href.slice(0, -1));
 }
 
-// --- Get subtargets ---
+// --- Get subtarget folders ---
 async function getSubtargets(target) {
   const $ = await fetchHTML(`${baseUrl}${target}/`);
   if (!$) return [];
-  return $('a')
-    .map((_, el) => $(el).attr('href'))
+  return $('table tr td.n a')
+    .map((i, el) => $(el).attr('href'))
     .get()
-    .filter(h => h && h.endsWith('/') && h !== '../')
-    .map(h => h.slice(0, -1));
+    .filter(href => href && href.endsWith('/'))
+    .map(href => href.slice(0, -1));
 }
 
-// --- Get pkgarch (profiles.json → index.json → fallback .apk/.ipk) ---
+// --- Get pkgarch ---
 async function getPkgarch(target, subtarget) {
-  const base = `${baseUrl}${target}/${subtarget}/`;
+  const baseTargetUrl = `${baseUrl}${target}/${subtarget}/`;
 
-  // 1. profiles.json (самый надёжный в 25.12+)
-  const profiles = await fetchJSON(`${base}profiles.json`);
-  if (profiles?.arch_packages) {
-    const archs = Array.isArray(profiles.arch_packages) ? profiles.arch_packages : [profiles.arch_packages];
-    console.error(`[index.js] ${target}/${subtarget} → profiles.json: ${archs}`);
-    return archs;
+  // 1) index.json
+  let json = await fetchJSON(`${baseTargetUrl}packages/index.json`);
+  if (json && typeof json.architecture === 'string') {
+    return [json.architecture];
   }
 
-  // 2. index.json
-  const index = await fetchJSON(`${base}packages/index.json`);
-  if (index?.architecture) {
-    console.error(`[index.js] ${target}/${subtarget} → index.json: ${index.architecture}`);
-    return [index.architecture];
+  // 2) profiles.json
+  json = await fetchJSON(`${baseTargetUrl}profiles.json`);
+  if (json && typeof json.arch_packages !== 'undefined') {
+    return Array.isArray(json.arch_packages) ? json.arch_packages : [json.arch_packages];
   }
 
-  // 3. Fallback — парсим .apk и .ipk
+  // 3) Fallback — теперь ищет и .ipk, и .apk
   return [await getPkgarchFallback(target, subtarget)];
 }
 
+// --- Fallback function — поддержка .apk и .ipk ---
 async function getPkgarchFallback(target, subtarget) {
-  const $ = await fetchHTML(`${baseUrl}${target}/${subtarget}/packages/`);
-  if (!$) return 'unknown';
-
+  const packagesUrl = `${baseUrl}${target}/${subtarget}/packages/`;
   let pkgarch = 'unknown';
-  $('a').each((_, el) => {
+  const $ = await fetchHTML(packagesUrl);
+  if (!$) return pkgarch;
+
+  // Ищем не-kernel .apk или .ipk
+  $('a').each((i, el) => {
     const name = $(el).attr('href');
     if (!name) return;
-    const match = name.match(/_([a-zA-Z0-9_-]+)\.(apk|ipk)$/i);
-    if (match && match[1] && !name.startsWith('kernel_') && !name.includes('kmod-')) {
-      pkgarch = match[1];
-      return false;
+
+    if ((name.endsWith('.ipk') || name.endsWith('.apk')) &&
+        !name.startsWith('kernel_') && !name.includes('kmod-')) {
+      const match = name.match(/_([a-zA-Z0-9_-]+)\.(ipk|apk)$/);
+      if (match) {
+        pkgarch = match[1];
+        return false; // break
+      }
     }
   });
 
+  // Если не нашли — смотрим kernel_*.apk / .ipk
   if (pkgarch === 'unknown') {
-    $('a').each((_, el) => {
+    $('a').each((i, el) => {
       const name = $(el).attr('href');
       if (!name) return;
-      const match = name.match(/_([a-zA-Z0-9_-]+)\.(apk|ipk)$/i);
-      if (match && name.startsWith('kernel_')) {
-        pkgarch = match[1];
-        return false;
+
+      if (name.startsWith('kernel_') &&
+          (name.endsWith('.ipk') || name.endsWith('.apk'))) {
+        const match = name.match(/_([a-zA-Z0-9_-]+)\.(ipk|apk)$/);
+        if (match) {
+          pkgarch = match[1];
+          return false;
+        }
       }
     });
   }
+
   return pkgarch;
 }
 
 // --- Main ---
 async function main() {
-  const targets = await getTargets();
-  const matrix = [];
-  const seen = new Set();
+  try {
+    const targets = await getTargets();
+    console.error(`Found ${targets.length} targets`);
 
-  for (const target of targets) {
-    const subtargets = await getSubtargets(target);
-    for (const subtarget of subtargets) {
-      const archs = await getPkgarch(target, subtarget);
-      for (const pkgarch of archs) {
-        if (pkgarch === 'unknown') continue;
-        const key = `${target}|${subtarget}|${pkgarch}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          matrix.push({ target, subtarget, pkgarch });
+    const matrix = [];
+    const seen = new Set();
+
+    for (const target of targets) {
+      const subtargets = await getSubtargets(target);
+      for (const subtarget of subtargets) {
+        const archs = await getPkgarch(target, subtarget);
+        for (const pkgarch of archs) {
+          if (pkgarch === 'unknown') continue;
+          const key = `${target}|${subtarget}|${pkgarch}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            matrix.push({ target, subtarget, pkgarch });
+          }
         }
       }
     }
-  }
 
-  console.error(`[index.js] Matrix ready: ${matrix.length} entries`);
-  console.log(JSON.stringify({ include: matrix }));
+    console.error(`Generated matrix with ${matrix.length} entries`);
+    console.log(JSON.stringify({ include: matrix }));
+  } catch (err) {
+    console.error('Error:', err.message || err);
+    process.exit(1);
+  }
 }
 
-main().catch(err => {
-  console.error('[index.js] FATAL:', err.message);
-  process.exit(1);
-});
+main();
