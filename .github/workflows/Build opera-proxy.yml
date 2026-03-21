@@ -6,7 +6,7 @@ on:
       openwrt_version:
         description: "OpenWrt version (23.x / 24.x / 25.12.x / SNAPSHOT)"
         required: true
-        default: "25.12.1"
+        default: "23.05.5"
       opera_proxy_ref:
         description: "opera-proxy ref"
         required: true
@@ -20,15 +20,76 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
 
       - name: Install deps
         run: npm install axios cheerio
 
+      # 🔥 генерим JS прямо в раннере (никаких missing file)
       - id: out
         run: |
-          node .github/scripts/gen-matrix.js ${{ github.event.inputs.openwrt_version }} > matrix.json
+          cat << 'EOF' > gen-matrix.js
+          const axios = require('axios');
+          const cheerio = require('cheerio');
+
+          const version = process.argv[2];
+          const isSnapshot = version === 'SNAPSHOT';
+
+          const baseUrl = isSnapshot
+            ? `https://downloads.openwrt.org/snapshots/targets/`
+            : `https://downloads.openwrt.org/releases/${version}/targets/`;
+
+          async function fetchHTML(url) {
+            const { data } = await axios.get(url);
+            return cheerio.load(data);
+          }
+
+          async function fetchJSON(url) {
+            const { data } = await axios.get(url);
+            return data;
+          }
+
+          async function getTargets() {
+            const $ = await fetchHTML(baseUrl);
+            return $('a').map((i, el) => $(el).attr('href'))
+              .get().filter(h => h && h.endsWith('/'))
+              .map(h => h.slice(0, -1));
+          }
+
+          async function getSubtargets(target) {
+            const $ = await fetchHTML(baseUrl + target + '/');
+            return $('a').map((i, el) => $(el).attr('href'))
+              .get().filter(h => h && h.endsWith('/'))
+              .map(h => h.slice(0, -1));
+          }
+
+          async function getPkgarch(target, sub) {
+            try {
+              const j = await fetchJSON(baseUrl + target + '/' + sub + '/packages/index.json');
+              return j.architecture;
+            } catch {}
+            return null;
+          }
+
+          (async () => {
+            const targets = await getTargets();
+            const map = new Map();
+
+            for (const t of targets) {
+              const subs = await getSubtargets(t);
+              for (const s of subs) {
+                const arch = await getPkgarch(t, s);
+                if (arch && !map.has(arch)) {
+                  map.set(arch, { target: t, subtarget: s, pkgarch: arch });
+                }
+              }
+            }
+
+            console.log(JSON.stringify({ include: Array.from(map.values()) }));
+          })();
+          EOF
+
+          node gen-matrix.js ${{ github.event.inputs.openwrt_version }} > matrix.json
           echo "matrix=$(cat matrix.json)" >> $GITHUB_OUTPUT
 
   build:
