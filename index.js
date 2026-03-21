@@ -1,122 +1,176 @@
-// index.js
 const axios = require('axios');
 const cheerio = require('cheerio');
 
 const version = process.argv[2];
 if (!version) {
-  console.error('Version required');
+  console.error('Version argument is required (example: SNAPSHOT or 24.10.0)');
   process.exit(1);
 }
 
 const isSnapshot = version.toUpperCase() === 'SNAPSHOT';
-const base = isSnapshot
+const baseUrl = isSnapshot
   ? 'https://downloads.openwrt.org/snapshots/targets/'
   : `https://downloads.openwrt.org/releases/${version}/targets/`;
 
+console.error(`Using base URL: ${baseUrl}`);
+
+// --- HTTP helpers ---
 async function fetchHTML(url) {
   try {
     const { data } = await axios.get(url, { timeout: 15000 });
     return cheerio.load(data);
-  } catch (e) {
-    console.error(`Fetch failed: ${url} → ${e.message}`);
+  } catch (err) {
+    console.error(`Failed to fetch HTML: ${url} → ${err.message}`);
     return null;
   }
 }
 
-async function getDirs(url) {
+async function fetchJSON(url) {
+  try {
+    const { data } = await axios.get(url, { timeout: 10000 });
+    return data;
+  } catch (err) {
+    console.error(`Failed to fetch JSON: ${url} → ${err.message}`);
+    return null;
+  }
+}
+
+// --- Get target folders ---
+async function getTargets() {
+  const $ = await fetchHTML(baseUrl);
+  if (!$) return [];
+
+  const targets = $('a')
+    .map((i, el) => $(el).attr('href'))
+    .get()
+    .filter(href => href && href.endsWith('/') && href !== '../')
+    .map(href => href.slice(0, -1));
+
+  console.error(`Found ${targets.length} targets`);
+  if (targets.length > 0) console.error(`First few: ${targets.slice(0,5).join(', ')}...`);
+  return targets;
+}
+
+// --- Get subtarget folders ---
+async function getSubtargets(target) {
+  const url = `${baseUrl}${target}/`;
   const $ = await fetchHTML(url);
   if (!$) return [];
-  return $('a')
-    .map((_, el) => $(el).attr('href'))
+
+  const subs = $('a')
+    .map((i, el) => $(el).attr('href'))
     .get()
-    .filter(h => h && h.endsWith('/') && !h.startsWith('?') && h !== '../')
-    .map(h => h.slice(0, -1));
+    .filter(href => href && href.endsWith('/') && href !== '../')
+    .map(href => href.slice(0, -1));
+
+  console.error(`  ${target} → ${subs.length} subtargets`);
+  return subs;
 }
 
-async function getPkgArch(target, subtarget) {
-  const url = `${base}${target}/${subtarget}/`;
-  let candidates = [];
+// --- Get pkgarch ---
+async function getPkgarch(target, subtarget) {
+  const baseTargetUrl = `${baseUrl}${target}/${subtarget}/`;
 
-  // 1. Пробуем profiles.json (новые релизы)
-  try {
-    const res = await axios.get(`${url}profiles.json`, { timeout: 8000 });
-    if (res.data && res.data.arch_packages) {
-      const archs = Array.isArray(res.data.arch_packages)
-        ? res.data.arch_packages
-        : [res.data.arch_packages];
-      if (archs.length > 0) return archs;
+  // 1. index.json (иногда есть architecture)
+  const indexUrl = `${baseTargetUrl}packages/index.json`;
+  let json = await fetchJSON(indexUrl);
+  if (json && typeof json.architecture === 'string' && json.architecture !== '') {
+    console.error(`    ${target}/${subtarget} → architecture from index.json: ${json.architecture}`);
+    return [json.architecture];
+  }
+
+  // 2. profiles.json (самый надёжный источник в новых версиях)
+  const profilesUrl = `${baseTargetUrl}profiles.json`;
+  json = await fetchJSON(profilesUrl);
+  if (json && json.arch_packages) {
+    const archs = Array.isArray(json.arch_packages) ? json.arch_packages : [json.arch_packages];
+    if (archs.length > 0 && archs[0] !== '') {
+      console.error(`    ${target}/${subtarget} → arch_packages from profiles.json: ${archs.join(', ')}`);
+      return archs;
     }
-  } catch {}
+  }
 
-  // 2. index.json (иногда есть)
-  try {
-    const res = await axios.get(`${url}packages/index.json`, { timeout: 8000 });
-    if (res.data?.architecture) return [res.data.architecture];
-  } catch {}
+  // 3. Fallback — парсим пакеты из packages/
+  return [await getPkgarchFallback(target, subtarget)];
+}
 
-  // 3. Фallback — парсим .ipk из packages/
+// --- Fallback: ищем .apk и .ipk ---
+async function getPkgarchFallback(target, subtarget) {
+  const packagesUrl = `${baseUrl}${target}/${subtarget}/packages/`;
+  let pkgarch = 'unknown';
+
+  const $ = await fetchHTML(packagesUrl);
+  if (!$) return pkgarch;
+
+  // Ищем обычный пакет (не kernel, не kmod)
+  $('a').each((i, el) => {
+    const name = $(el).attr('href');
+    if (!name) return;
+
+    const match = name.match(/_([a-zA-Z0-9_-]+)\.(apk|ipk)$/i);
+    if (match && match[1] && !name.startsWith('kernel_') && !name.includes('kmod-')) {
+      pkgarch = match[1];
+      console.error(`    Fallback found pkgarch from package: ${pkgarch} (${name})`);
+      return false; // break
+    }
+  });
+
+  // Если ничего — берём из kernel_*.apk / .ipk
+  if (pkgarch === 'unknown') {
+    $('a').each((i, el) => {
+      const name = $(el).attr('href');
+      if (!name) return;
+
+      const match = name.match(/_([a-zA-Z0-9_-]+)\.(apk|ipk)$/i);
+      if (match && match[1] && name.startsWith('kernel_')) {
+        pkgarch = match[1];
+        console.error(`    Kernel fallback pkgarch: ${pkgarch} (${name})`);
+        return false;
+      }
+    });
+  }
+
+  if (pkgarch === 'unknown') {
+    console.error(`    No usable package found for fallback in ${packagesUrl}`);
+  }
+
+  return pkgarch;
+}
+
+// --- Main ---
+async function main() {
   try {
-    const $ = await fetchHTML(`${url}packages/`);
-    if ($) {
-      $('a').each((_, el) => {
-        const href = $(el).attr('href');
-        if (!href || !href.endsWith('.ipk')) return;
-        // берём первый нормальный не-kernel пакет
-        if (href.includes('_') && !href.startsWith('kernel_') && !href.includes('kmod-')) {
-          const match = href.match(/_([a-z0-9_-]+)\.ipk$/i);
-          if (match && match[1] !== 'all') {
-            candidates.push(match[1]);
+    const targets = await getTargets();
+    if (targets.length === 0) {
+      console.error('No targets found — check URL or network');
+      process.exit(1);
+    }
+
+    const matrix = [];
+    const seen = new Set();
+
+    for (const target of targets) {
+      const subtargets = await getSubtargets(target);
+      for (const subtarget of subtargets) {
+        const archs = await getPkgarch(target, subtarget);
+        for (const pkgarch of archs) {
+          if (pkgarch === 'unknown' || !pkgarch) continue;
+
+          const key = `${target}|${subtarget}|${pkgarch}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            matrix.push({ target, subtarget, pkgarch });
           }
         }
-      });
-    }
-  } catch {}
-
-  // последний шанс — kernel
-  if (candidates.length === 0) {
-    try {
-      const $ = await fetchHTML(`${url}kmods/`);
-      if ($) {
-        const first = $('a').toArray().find(a => a.attribs.href.endsWith('.ipk'));
-        if (first) {
-          const match = first.attribs.href.match(/_([a-z0-9_-]+)\.ipk$/i);
-          if (match) candidates.push(match[1]);
-        }
-      }
-    } catch {}
-  }
-
-  return candidates.length > 0 ? [...new Set(candidates)] : ['unknown'];
-}
-
-async function main() {
-  const targets = await getDirs(base);
-  const matrix = [];
-
-  for (const target of targets) {
-    const subtargets = await getDirs(`${base}${target}/`);
-    for (const sub of subtargets) {
-      const archs = await getPkgArch(target, sub);
-      for (const arch of archs) {
-        if (arch === 'unknown') continue;
-        matrix.push({
-          target,
-          subtarget: sub,
-          pkgarch: arch
-        });
       }
     }
+
+    console.error(`Total unique entries in matrix: ${matrix.length}`);
+    console.log(JSON.stringify({ include: matrix }));
+  } catch (err) {
+    console.error('Fatal error in main:', err.message || err);
+    process.exit(1);
   }
-
-  // Убираем дубликаты (на всякий случай)
-  const unique = matrix.filter((v, i, a) =>
-    a.findIndex(t => t.target === v.target && t.subtarget === v.subtarget && t.pkgarch === v.pkgarch) === i
-  );
-
-  console.log(JSON.stringify({ include: unique }));
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+main();
