@@ -1,209 +1,93 @@
-name: Build opera-proxy (fast multi-arch)
+name: Build opera-proxy (all archs)
 
 on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: "OpenWrt version (23.x / 24.x / 25.12.x / SNAPSHOT)"
+        description: "OpenWrt version"
         required: true
         default: "25.12.1"
       opera_proxy_ref:
-        description: "opera-proxy ref"
+        description: "opera-proxy branch/tag/commit"
         required: true
         default: "master"
 
 jobs:
-  generate-matrix:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.out.outputs.matrix }}
-
-    steps:
-      - uses: actions/setup-node@v4
-
-      - name: Install deps
-        run: npm install axios cheerio
-
-      - id: out
-        run: |
-          cat << 'EOF' > gen.js
-          const axios = require('axios');
-          const cheerio = require('cheerio');
-
-          const version = process.argv[2];
-          const isSnapshot = version === 'SNAPSHOT';
-
-          const base = isSnapshot
-            ? 'https://downloads.openwrt.org/snapshots/'
-            : `https://downloads.openwrt.org/releases/${version}/`;
-
-          async function fetchHTML(url) {
-            const { data } = await axios.get(url);
-            return cheerio.load(data);
-          }
-
-          async function fetchJSON(url) {
-            const { data } = await axios.get(url);
-            return data;
-          }
-
-          // 👉 список архитектур из packages/
-          async function getArchs() {
-            const $ = await fetchHTML(base + 'packages/');
-            return $('a')
-              .map((i, el) => $(el).attr('href'))
-              .get()
-              .filter(h => h && h.endsWith('/'))
-              .map(h => h.replace('/', ''));
-          }
-
-          async function getTargets() {
-            const $ = await fetchHTML(base + 'targets/');
-            return $('a')
-              .map((i, el) => $(el).attr('href'))
-              .get()
-              .filter(h => h && h.endsWith('/'))
-              .map(h => h.replace('/', ''));
-          }
-
-          async function getSubs(target) {
-            const $ = await fetchHTML(base + 'targets/' + target + '/');
-            return $('a')
-              .map((i, el) => $(el).attr('href'))
-              .get()
-              .filter(h => h && h.endsWith('/'))
-              .map(h => h.replace('/', ''));
-          }
-
-          async function getArch(target, sub) {
-            try {
-              const j = await fetchJSON(base + `targets/${target}/${sub}/packages/index.json`);
-              return j.architecture;
-            } catch {}
-            return null;
-          }
-
-          (async () => {
-            const wanted = await getArchs();
-            const targets = await getTargets();
-
-            const result = [];
-
-            for (const arch of wanted) {
-              let found = false;
-
-              for (const t of targets) {
-                const subs = await getSubs(t);
-
-                for (const s of subs) {
-                  const a = await getArch(t, s);
-
-                  if (a === arch) {
-                    result.push({ target: t, subtarget: s, pkgarch: arch });
-                    found = true;
-                    break;
-                  }
-                }
-
-                if (found) break;
-              }
-            }
-
-            console.log(JSON.stringify({ include: result }));
-          })();
-          EOF
-
-          node gen.js ${{ github.event.inputs.openwrt_version }} > matrix.json
-          echo "matrix=$(cat matrix.json)" >> $GITHUB_OUTPUT
-
   build:
-    needs: generate-matrix
     runs-on: ubuntu-22.04
-
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+      matrix:
+        arch: []
 
     steps:
-      - name: Checkout opera-proxy
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.opera_proxy_ref }}
           path: opera-proxy
 
-      - name: Detect package format
-        id: pkg
-        run: |
-          VER="${{ github.event.inputs.openwrt_version }}"
-
-          if [[ "$VER" == "SNAPSHOT" || "$VER" =~ ^25\.12\. ]]; then
-            echo "ext=apk" >> $GITHUB_OUTPUT
-          else
-            echo "ext=ipk" >> $GITHUB_OUTPUT
-          fi
-
-          echo "Format: $(grep ext $GITHUB_OUTPUT)"
-
-      - name: Install deps
+      - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd curl
+          sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd curl nodejs npm
 
-      - name: Download SDK
+      - name: Get architectures
+        id: archs
         run: |
-          if [ "${{ github.event.inputs.openwrt_version }}" = "SNAPSHOT" ]; then
-            BASE_URL="https://downloads.openwrt.org/snapshots/targets/${{ matrix.target }}/${{ matrix.subtarget }}/"
-          else
-            BASE_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ matrix.target }}/${{ matrix.subtarget }}/"
-          fi
+          VERSION="${{ github.event.inputs.openwrt_version }}"
+          URL="https://downloads.openwrt.org/releases/${VERSION}/packages/"
+          ARCHS=$(curl -s "$URL" | grep -oP 'href="\K[^"/]+(?=/")')
+          echo "ARCHS=$ARCHS"
+          echo "matrix=$(printf '%s\n' $ARCHS | jq -R . | jq -s '{include: map({pkgarch:.})}')" >> $GITHUB_OUTPUT
 
-          echo "Using $BASE_URL"
+      - name: Set matrix
+        run: echo "Matrix ready" # GitHub automatically uses ${{ steps.archs.outputs.matrix }}
 
-          SDK=$(curl -s $BASE_URL | grep -oP 'openwrt-sdk[^"]+\.tar\.(zst|xz)' | head -n1)
-
-          if [ -z "$SDK" ]; then
-            echo "No SDK, skipping"
-            exit 0
-          fi
-
-          wget -q ${BASE_URL}${SDK}
-          tar -xf $SDK
-          mv openwrt-sdk* openwrt
-
-      - name: Add package
+      - name: Build packages
         run: |
-          mkdir -p openwrt/package/opera-proxy
-          cp opera-proxy/openwrt-package/Makefile openwrt/package/opera-proxy/
+          VERSION="${{ github.event.inputs.openwrt_version }}"
+          for ARCH in $ARCHS; do
+            echo "Build for $ARCH"
 
-      - name: Prepare source
-        run: |
-          mkdir -p openwrt/dl
-          mkdir -p temp/opera-proxy-1.15.0
-          rsync -a --exclude=.git opera-proxy/ temp/opera-proxy-1.15.0/
-          tar -czf openwrt/dl/opera-proxy-1.15.0.tar.gz -C temp .
-          rm -rf temp
+            # Определяем формат пакета
+            if [[ "$VERSION" =~ ^25\.12\. ]] ; then
+              EXT=apk
+            else
+              EXT=ipk
+            fi
 
-      - name: Feeds + config
-        run: |
-          cd openwrt
-          ./scripts/feeds update -a
-          ./scripts/feeds install golang
+            # SDK URL
+            BASE_URL="https://downloads.openwrt.org/releases/$VERSION/targets/*/*/"
+            SDK_URL=$(curl -s $BASE_URL | grep -oP 'openwrt-sdk[^"]+\.tar\.(zst|xz)' | head -n1)
+            wget -q ${BASE_URL}${SDK_URL}
+            tar -xf $SDK_URL
+            mv openwrt-sdk* openwrt
 
-          make defconfig
-          echo "CONFIG_PACKAGE_opera-proxy=y" >> .config
-          make oldconfig
+            # Сборка
+            mkdir -p openwrt/package/opera-proxy
+            cp opera-proxy/openwrt-package/Makefile openwrt/package/opera-proxy/
 
-      - name: Compile
-        run: |
-          cd openwrt
-          make package/opera-proxy/compile -j$(nproc) V=s
+            mkdir -p openwrt/dl
+            mkdir -p temp/opera-proxy-1.15.0
+            rsync -a --exclude=.git opera-proxy/ temp/opera-proxy-1.15.0/
+            tar -czf openwrt/dl/opera-proxy-1.15.0.tar.gz -C temp .
+            rm -rf temp
+
+            cd openwrt
+            ./scripts/feeds update -a
+            ./scripts/feeds install golang
+            make defconfig
+            echo "CONFIG_PACKAGE_opera-proxy=y" >> .config
+            make oldconfig
+            make package/opera-proxy/compile -j$(nproc) V=s
+            cd ..
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
           name: opera-proxy-${{ matrix.pkgarch }}
           path: |
-            openwrt/bin/packages/**/opera-proxy*.${{ steps.pkg.outputs.ext }}
             openwrt/bin/packages/**/opera-proxy*.ipk
             openwrt/bin/packages/**/opera-proxy*.apk
           if-no-files-found: error
