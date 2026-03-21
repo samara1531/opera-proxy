@@ -1,10 +1,10 @@
-name: Build opera-proxy (multi-arch universal)
+name: Build opera-proxy (multi-arch)
 
 on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: "OpenWrt version (e.g. 23.05.5 / 24.10.0 / 25.12.0 / SNAPSHOT)"
+        description: "OpenWrt version (23.x / 24.x / 25.12.x / SNAPSHOT)"
         required: true
         default: "25.12.1"
       opera_proxy_ref:
@@ -17,12 +17,14 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.out.outputs.matrix }}
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
 
-      - run: npm install axios cheerio
+      - name: Install deps
+        run: npm install axios cheerio
 
       - id: out
         run: |
@@ -44,7 +46,6 @@ jobs:
           ref: ${{ github.event.inputs.opera_proxy_ref }}
           path: opera-proxy
 
-      # 🔥 ЧЁТКАЯ логика формата
       - name: Detect package format
         id: pkg
         run: |
@@ -56,7 +57,7 @@ jobs:
             echo "ext=ipk" >> $GITHUB_OUTPUT
           fi
 
-          echo "Detected format: $(grep ext $GITHUB_OUTPUT)"
+          echo "Format: $(grep ext $GITHUB_OUTPUT)"
 
       - name: Install deps
         run: |
@@ -76,7 +77,7 @@ jobs:
           SDK=$(curl -s $BASE_URL | grep -oP 'openwrt-sdk[^"]+\.tar\.(zst|xz)' | head -n1)
 
           if [ -z "$SDK" ]; then
-            echo "No SDK found, skipping"
+            echo "No SDK, skipping"
             exit 0
           fi
 
