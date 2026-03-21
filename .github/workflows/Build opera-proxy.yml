@@ -31,10 +31,11 @@ jobs:
         id: pkg
         run: |
           VERSION="${{ github.event.inputs.openwrt_version }}"
-          if [[ "$VERSION" == "SNAPSHOT" || "$VERSION" =~ ^25\.12\. ]]; then
+          if [ "$VERSION" = "SNAPSHOT" ] || echo "$VERSION" | grep -q '^25\.12\.' ; then
             echo "ext=apk" >> $GITHUB_OUTPUT
           else
             echo "ext=ipk" >> $GITHUB_OUTPUT
+          fi
 
       - name: Fetch all targets and subtargets
         id: targets
