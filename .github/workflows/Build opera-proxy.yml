@@ -1,12 +1,12 @@
-name: Build Opera-Proxy for All OpenWrt Targets
+name: Build Multi-Target opera-proxy
 
 on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: "OpenWrt version (например, 25.12.1 или SNAPSHOT)"
+        description: "OpenWrt version (SNAPSHOT or release like 25.12.1)"
         required: true
-        default: "25.12.1"
+        default: "SNAPSHOT"
       opera_proxy_ref:
         description: "opera-proxy branch/tag/commit"
         required: true
@@ -18,32 +18,22 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - name: Generate OpenWrt target matrix
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install Node.js dependencies
+        run: npm install axios cheerio
+
+      - name: Generate build matrix
         id: set-matrix
         run: |
           VERSION="${{ github.event.inputs.openwrt_version }}"
-
-          if [ "$VERSION" = "SNAPSHOT" ]; then
-            BASE_URL="https://downloads.openwrt.org/snapshots/targets"
-          else
-            BASE_URL="https://downloads.openwrt.org/releases/$VERSION/targets"
-          fi
-
-          # получаем список таргетов
-          TARGETS=$(curl -s "$BASE_URL/" | grep -oP 'href="\K[^"/]+(?=/")')
-          MATRIX="[]"
-
-          for TARGET in $TARGETS; do
-            # получаем список subtarget для каждого таргета
-            SUBTARGETS=$(curl -s "$BASE_URL/$TARGET/" | grep -oP 'href="\K[^"/]+(?=/")')
-            for SUB in $SUBTARGETS; do
-              MATRIX=$(echo $MATRIX | jq ". + [{\"target\":\"$TARGET\",\"subtarget\":\"$SUB\"}]")
-            done
-          done
-
-          MATRIX=$(echo $MATRIX | jq -c '.')
+          MATRIX=$(node index.js "$VERSION" | jq -c '{include: .}')
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
-          echo "Matrix generated with $(echo $MATRIX | jq length) items"
 
   build-opera-proxy:
     needs: generate-matrix
@@ -62,14 +52,14 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd curl jq
+          sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd
 
       - name: Download and extract SDK
         run: |
           set -e -x
+          VERSION="${{ github.event.inputs.openwrt_version }}"
           TARGET="${{ matrix.target }}"
           SUBTARGET="${{ matrix.subtarget }}"
-          VERSION="${{ github.event.inputs.openwrt_version }}"
 
           if [ "$VERSION" = "SNAPSHOT" ]; then
             BASE_URL="https://downloads.openwrt.org/snapshots/targets/$TARGET/$SUBTARGET/"
@@ -79,7 +69,7 @@ jobs:
 
           SDK_URL=$(curl -s "$BASE_URL" | grep -oP 'href="openwrt-sdk[^"]+\.(tar\.zst|tar\.xz)"' | sed -e 's/href="//' -e 's/"$//' | head -n1)
           if [ -z "$SDK_URL" ]; then
-            echo "SDK not found for $TARGET/$SUBTARGET"
+            echo "⚠️ SDK file not found for $TARGET/$SUBTARGET"
             exit 1
           fi
 
@@ -88,7 +78,7 @@ jobs:
           rm -f *.tar.zst *.tar.xz
           mv openwrt-sdk* openwrt
 
-      - name: Copy Makefile to SDK
+      - name: Copy Makefile to SDK package directory
         run: |
           mkdir -p openwrt/package/opera-proxy
           cp opera-proxy/openwrt-package/Makefile openwrt/package/opera-proxy/
@@ -96,9 +86,9 @@ jobs:
       - name: Create source tarball
         run: |
           mkdir -p openwrt/dl
-          mkdir -p temp/opera-proxy-src
-          rsync -av --exclude=.git opera-proxy/ temp/opera-proxy-src/
-          tar -czf openwrt/dl/opera-proxy-1.0.0.tar.gz -C temp opera-proxy-src
+          mkdir -p temp/opera-proxy
+          rsync -av --exclude=.git opera-proxy/ temp/opera-proxy/
+          tar -czf openwrt/dl/opera-proxy.tar.gz -C temp opera-proxy
           rm -rf temp
 
       - name: Update feeds
@@ -108,12 +98,13 @@ jobs:
           ./scripts/feeds install -a
           cd ..
 
-      - name: Prepare config
+      - name: Prepare default config
         run: |
           cd openwrt
           make defconfig
           echo "CONFIG_PACKAGE_opera-proxy=y" >> .config
           make oldconfig
+          grep "CONFIG_PACKAGE_opera-proxy" .config || (echo "Package not enabled!" && exit 1)
           cd ..
 
       - name: Compile opera-proxy
