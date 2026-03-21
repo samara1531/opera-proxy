@@ -1,10 +1,10 @@
-name: Build opera-proxy (all archs)
+name: Build opera-proxy for all architectures
 
 on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: "OpenWrt version (например 23.05.5 или 25.12.1 или SNAPSHOT)"
+        description: "OpenWrt version (например 23.05.5, 25.12.1 или SNAPSHOT)"
         required: true
         default: "25.12.1"
       opera_proxy_ref:
@@ -13,7 +13,7 @@ on:
         default: "master"
 
 jobs:
-  build-all-archs:
+  build-all:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
@@ -27,24 +27,25 @@ jobs:
           sudo apt update
           sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd curl nodejs npm jq
 
-      - name: Get architectures
+      - name: Fetch architectures
         id: archs
         run: |
           VERSION="${{ github.event.inputs.openwrt_version }}"
           URL="https://downloads.openwrt.org/releases/${VERSION}/packages/"
           echo "Fetching architectures from $URL"
 
-          ARCHS=$(curl -s "$URL" | grep -oP 'href="\K[^"/]+(?=/")')
-          echo "Found architectures: $ARCHS"
+          # Получаем все папки (архитектуры) и формируем JSON-массив
+          ARCHS_JSON=$(curl -s "$URL" | grep -oP 'href="\K[^"/]+(?=/")' | jq -R . | jq -s .)
 
-          # Сохраняем для последующего цикла
-          echo "$ARCHS" > arch-list.txt
-          echo "ARCH_LIST=$(cat arch-list.txt)" >> $GITHUB_OUTPUT
+          echo "Found architectures:"
+          echo "$ARCHS_JSON"
+          
+          echo "ARCHS_JSON=$ARCHS_JSON" >> $GITHUB_OUTPUT
 
-      - name: Build opera-proxy for all architectures
+      - name: Build opera-proxy for each architecture
         run: |
           VERSION="${{ github.event.inputs.openwrt_version }}"
-          ARCHS=$(cat arch-list.txt)
+          ARCHS=$(jq -r '.[]' <<< "${{ steps.archs.outputs.ARCHS_JSON }}")
 
           for ARCH in $ARCHS; do
             echo "================ Build for $ARCH ================"
@@ -57,17 +58,17 @@ jobs:
             fi
             echo "Package format: $EXT"
 
-            # Находим SDK
+            # Скачиваем SDK (берём первый доступный SDK для всех архитектур)
             BASE_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/*/*/"
-            SDK_URL=$(curl -s $BASE_URL | grep -oP 'openwrt-sdk[^"]+\.tar\.(zst|xz)' | head -n1)
+            SDK_NAME=$(curl -s $BASE_URL | grep -oP 'openwrt-sdk[^"]+\.tar\.(zst|xz)' | head -n1)
 
-            if [ -z "$SDK_URL" ]; then
+            if [ -z "$SDK_NAME" ]; then
               echo "SDK not found for $ARCH, skipping..."
               continue
             fi
 
-            wget -q "${BASE_URL}${SDK_URL}"
-            tar -xf "$SDK_URL"
+            wget -q "${BASE_URL}${SDK_NAME}"
+            tar -xf "$SDK_NAME"
             mv openwrt-sdk* openwrt
 
             # Копируем Makefile пакета
@@ -93,7 +94,15 @@ jobs:
             make package/opera-proxy/compile -j$(nproc) V=s
             cd ..
 
-            # Upload артефакт
+            # Загружаем артефакт
             echo "Uploading package for $ARCH"
-            gh release upload "opera-proxy-${VERSION}" openwrt/bin/packages/**/opera-proxy*.$EXT --clobber || true
+            mkdir -p artifacts/$ARCH
+            cp openwrt/bin/packages/**/opera-proxy*.$EXT artifacts/$ARCH/ 2>/dev/null || true
           done
+
+      - name: Upload all artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: opera-proxy-packages
+          path: artifacts/
+          if-no-files-found: error
