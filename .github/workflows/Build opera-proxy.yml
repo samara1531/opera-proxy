@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: "OpenWrt version (например 25.12.1, 24.10.0, SNAPSHOT)"
+        description: "OpenWrt version (например: 25.12.1, 24.10.0, SNAPSHOT)"
         required: true
         default: "25.12.1"
       opera_proxy_ref:
-        description: "opera-proxy branch/tag/commit"
+        description: "Branch / tag / commit"
         required: true
         default: "master"
 
@@ -18,8 +18,12 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - name: Checkout repository
+      - name: Checkout opera-proxy repository
         uses: actions/checkout@v4
+        with:
+          path: opera-proxy
+          ref: ${{ inputs.opera_proxy_ref }}
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -34,19 +38,17 @@ jobs:
         run: |
           VERSION="${{ inputs.openwrt_version }}"
 
-          # Запускаем node → stdout = JSON, stderr = отладка в файл
+          # Запускаем node → stdout = чистый JSON, stderr → файл отладки
           node index.js "$VERSION" > matrix.json 2> debug.log || echo '{"include":[]}' > matrix.json
 
-          # Читаем чистый JSON
           MATRIX=$(cat matrix.json)
 
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
 
-          # Отладка
           echo "Matrix size (bytes): $(wc -c < matrix.json)"
-          echo "::group::Matrix preview (первые 3 элемента + количество)"
-          jq '.include | length' matrix.json 2>/dev/null || echo "Cannot count"
-          jq '.include | .[:3]' matrix.json 2>/dev/null || echo "Preview failed (too big or invalid)"
+          echo "::group::Matrix preview"
+          jq '.include | length' matrix.json 2>/dev/null || echo "Cannot count entries"
+          jq '.include | .[:3]' matrix.json 2>/dev/null || echo "Preview too large or invalid"
           echo "::endgroup::"
 
           echo "::group::Node debug output (stderr)"
@@ -54,6 +56,7 @@ jobs:
           echo "::endgroup::"
 
   build-opera-proxy:
+    name: Build ${{ matrix.target }} / ${{ matrix.subtarget }} (${{ matrix.pkgarch }})
     needs: generate-matrix
     if: ${{ needs.generate-matrix.outputs.matrix != '{"include":[]}' }}
     runs-on: ubuntu-22.04
@@ -62,20 +65,23 @@ jobs:
       matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
 
     steps:
-      - name: Checkout opera-proxy
+      - name: Checkout opera-proxy (again, for build)
         uses: actions/checkout@v4
         with:
           path: opera-proxy
           ref: ${{ inputs.opera_proxy_ref }}
           fetch-depth: 0
 
-      - name: Install build dependencies
+      - name: Install build system dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd bc time
+          sudo apt install -y \
+            build-essential git python3 rsync gawk unzip \
+            libncurses-dev wget file zstd bc time \
+            patchutils subversion
 
-      - name: Determine package extension (.apk / .ipk)
-        id: detect
+      - name: Determine package extension (.apk or .ipk)
+        id: pkg_ext
         run: |
           VER="${{ inputs.openwrt_version }}"
           if [[ "$VER" == "SNAPSHOT" || "$VER" > "25.11" ]]; then
@@ -84,7 +90,7 @@ jobs:
             echo "ext=ipk" >> $GITHUB_OUTPUT
           fi
 
-      - name: Download and extract SDK
+      - name: Download and extract OpenWrt SDK
         run: |
           set -e -x
 
@@ -98,25 +104,42 @@ jobs:
             BASE_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}/${SUBTARGET}/"
           fi
 
-          SDK_FILE=$(curl -s "${BASE_URL}" | grep -oP 'href="\Kopenwrt-sdk[^"]+\.(tar\.xz|tar\.zst)' | head -n1)
+          SDK_FILE=$(curl -s --fail "$BASE_URL" \
+            | grep -oP 'href="\Kopenwrt-sdk[^"]+\.(tar\.xz|tar\.zst)' \
+            | head -n1 || true)
 
           if [ -z "$SDK_FILE" ]; then
-            echo "SDK not found for ${TARGET}/${SUBTARGET}"
+            echo "SDK not found in $BASE_URL"
+            curl -s "$BASE_URL" | grep -i sdk || true
             exit 1
           fi
 
-          curl -fsLO "${BASE_URL}${SDK_FILE}"
-          tar -xf "$(basename "$SDK_FILE")"
-          rm -f *.tar.*
+          curl --retry 3 --fail -L -o sdk.tar "${BASE_URL}${SDK_FILE}"
+          tar -xf sdk.tar
+          rm -f sdk.tar
           mv openwrt-sdk* openwrt
 
-      - name: Prepare opera-proxy package
+      - name: Prepare opera-proxy package directory
         run: |
+          echo "=== Диагностика структуры ==="
+          ls -la opera-proxy/ || true
+          ls -la opera-proxy/openwrt-package/ 2>/dev/null || echo "openwrt-package not found"
+
           mkdir -p openwrt/package/opera-proxy
-          cp opera-proxy/openwrt-package/Makefile openwrt/package/opera-proxy/
-          # если есть patches/files — копируем их
-          [ -d opera-proxy/openwrt-package/patches ] && cp -r opera-proxy/openwrt-package/patches openwrt/package/opera-proxy/
-          [ -d opera-proxy/openwrt-package/files   ] && cp -r opera-proxy/openwrt-package/files   openwrt/package/opera-proxy/
+
+          SOURCE_DIR="opera-proxy/openwrt-package"
+
+          if [ -f "$SOURCE_DIR/Makefile" ]; then
+            cp "$SOURCE_DIR/Makefile" openwrt/package/opera-proxy/
+            echo "Makefile copied"
+          else
+            echo "Makefile not found in $SOURCE_DIR"
+            exit 1
+          fi
+
+          # Опционально копируем patches и files, если есть
+          cp -r "$SOURCE_DIR/patches" openwrt/package/opera-proxy/ 2>/dev/null || true
+          cp -r "$SOURCE_DIR/files"   openwrt/package/opera-proxy/ 2>/dev/null || true
 
       - name: Create source tarball
         run: |
@@ -125,7 +148,7 @@ jobs:
           tar -czf openwrt/dl/opera-proxy-1.15.0.tar.gz -C temp opera-proxy-src
           rm -rf temp
 
-      - name: Update feeds & configure
+      - name: Update feeds and configure
         run: |
           cd openwrt
           ./scripts/feeds update -a
@@ -134,6 +157,7 @@ jobs:
           make defconfig
           echo "CONFIG_PACKAGE_opera-proxy=y" >> .config
           make oldconfig </dev/null
+          grep -q "CONFIG_PACKAGE_opera-proxy=y" .config || { echo "Package not enabled!"; exit 1; }
           cd ..
 
       - name: Compile package
@@ -145,8 +169,8 @@ jobs:
       - name: Upload compiled package
         uses: actions/upload-artifact@v4
         with:
-          name: opera-proxy-${{ inputs.openwrt_version }}-${{ matrix.target }}-${{ matrix.subtarget }}-${{ matrix.pkgarch }}
+          name: opera-proxy-${{ inputs.openwrt_version }}-${{ matrix.pkgarch }}-${{ matrix.target }}-${{ matrix.subtarget }}
           path: |
-            openwrt/bin/packages/*/${{ matrix.pkgarch }}/opera-proxy*.${{ steps.detect.outputs.ext }}
-            openwrt/bin/packages/*/*/opera-proxy*.${{ steps.detect.outputs.ext }}
+            openwrt/bin/packages/*/${{ matrix.pkgarch }}/opera-proxy*.${{ steps.pkg_ext.outputs.ext }}
+            openwrt/bin/packages/*/*/opera-proxy*.${{ steps.pkg_ext.outputs.ext }}
           if-no-files-found: warn
