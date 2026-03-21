@@ -44,25 +44,21 @@ async function getSubtargets(target) {
 async function getPkgarch(target, subtarget) {
   const baseTargetUrl = `${baseUrl}${target}/${subtarget}/`;
 
-  // 1) Try index.json
-  const indexUrl = `${baseTargetUrl}packages/index.json`;
+  // 1) index.json
   try {
-    const json = await fetchJSON(indexUrl);
-    if (json && typeof json.architecture === 'string') {
-      return [json.architecture];
-    }
+    const json = await fetchJSON(`${baseTargetUrl}packages/index.json`);
+    if (json && typeof json.architecture === 'string') return [json.architecture];
   } catch {}
 
-  // 2) Try profiles.json
-  const profilesUrl = `${baseTargetUrl}profiles.json`;
+  // 2) profiles.json
   try {
-    const json = await fetchJSON(profilesUrl);
+    const json = await fetchJSON(`${baseTargetUrl}profiles.json`);
     if (json && json.arch_packages) {
       return Array.isArray(json.arch_packages) ? json.arch_packages : [json.arch_packages];
     }
   } catch {}
 
-  // 3) Fallback
+  // 3) fallback
   return [await getPkgarchFallback(target, subtarget)];
 }
 
@@ -73,20 +69,18 @@ async function getPkgarchFallback(target, subtarget) {
   try {
     const $ = await fetchHTML(packagesUrl);
 
-    // look for first non-kernel .ipk
     $('a').each((i, el) => {
       const name = $(el).attr('href');
       if (name && name.endsWith('.ipk') && !name.startsWith('kernel_') && !name.includes('kmod-')) {
         const match = name.match(/_([a-zA-Z0-9_-]+)\.ipk$/);
         if (match) {
           pkgarch = match[1];
-          return false; // break
+          return false;
         }
       }
     });
 
     if (pkgarch === 'unknown') {
-      // fallback: try kernel_*
       $('a').each((i, el) => {
         const name = $(el).attr('href');
         if (name && name.startsWith('kernel_')) {
@@ -106,11 +100,6 @@ async function getPkgarchFallback(target, subtarget) {
 async function main() {
   try {
     const targets = await getTargets();
-    if (!targets.length) {
-      console.error('No targets found, exiting.');
-      process.exit(1);
-    }
-
     const matrix = [];
     const seen = new Set();
 
@@ -128,9 +117,9 @@ async function main() {
       }
     }
 
-    // --- Output for GitHub Actions ---
-    // Must be: { "include": [ ... ] }
+    // --- Выводим строго { "include": [...] } ---
     console.log(JSON.stringify({ include: matrix }));
+
   } catch (err) {
     console.error('Error:', err.message || err);
     process.exit(1);
