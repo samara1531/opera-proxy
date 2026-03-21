@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: "OpenWrt version (25.12.1 or SNAPSHOT)"
+        description: "OpenWrt version (например, 25.12.1 или SNAPSHOT)"
         required: true
         default: "25.12.1"
       opera_proxy_ref:
@@ -18,61 +18,31 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-
-      - name: Install dependencies
-        run: npm install axios cheerio
-
-      - name: Generate matrix of targets
+      - name: Generate OpenWrt target matrix
         id: set-matrix
         run: |
           VERSION="${{ github.event.inputs.openwrt_version }}"
-          node <<'EOF' > matrix.json
-          const axios = require('axios');
-          const cheerio = require('cheerio');
-          const VERSION = process.argv[2];
 
-          const baseURL = VERSION === "SNAPSHOT" 
-            ? "https://downloads.openwrt.org/snapshots/targets/"
-            : `https://downloads.openwrt.org/releases/${VERSION}/targets/`;
+          if [ "$VERSION" = "SNAPSHOT" ]; then
+            BASE_URL="https://downloads.openwrt.org/snapshots/targets"
+          else
+            BASE_URL="https://downloads.openwrt.org/releases/$VERSION/targets"
+          fi
 
-          (async () => {
-            const targetsPage = await axios.get(baseURL);
-            const $ = cheerio.load(targetsPage.data);
-            const targets = [];
-            $('a').each((i, el) => {
-              const target = $(el).attr('href');
-              if(target && !target.startsWith('?')) {
-                targets.push(target.replace(/\/$/, ''));
-              }
-            });
+          # получаем список таргетов
+          TARGETS=$(curl -s "$BASE_URL/" | grep -oP 'href="\K[^"/]+(?=/")')
+          MATRIX="[]"
 
-            const matrix = { include: [] };
-            for(const target of targets) {
-              const subURL = `${baseURL}${target}/`;
-              const subPage = await axios.get(subURL);
-              const $$ = cheerio.load(subPage.data);
-              $$('a').each((i, el) => {
-                const subtarget = $$(el).attr('href');
-                if(subtarget && !subtarget.startsWith('?')) {
-                  matrix.include.push({
-                    target,
-                    subtarget: subtarget.replace(/\/$/, '')
-                  });
-                }
-              });
-            }
+          for TARGET in $TARGETS; do
+            # получаем список subtarget для каждого таргета
+            SUBTARGETS=$(curl -s "$BASE_URL/$TARGET/" | grep -oP 'href="\K[^"/]+(?=/")')
+            for SUB in $SUBTARGETS; do
+              MATRIX=$(echo $MATRIX | jq ". + [{\"target\":\"$TARGET\",\"subtarget\":\"$SUB\"}]")
+            done
+          done
 
-            console.log(JSON.stringify(matrix));
-          })();
-EOF
-          MATRIX=$(node matrix.json "${VERSION}")
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "Matrix generated with $(echo $MATRIX | jq length) items"
 
   build-opera-proxy:
     needs: generate-matrix
@@ -81,37 +51,43 @@ EOF
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
     steps:
-      - name: Checkout opera-proxy
+      - name: Checkout opera-proxy repository
         uses: actions/checkout@v5
         with:
           path: opera-proxy
           ref: ${{ github.event.inputs.opera_proxy_ref }}
           fetch-depth: 0
 
-      - name: Install system dependencies
+      - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd
+          sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd curl jq
 
       - name: Download and extract SDK
         run: |
           set -e -x
-          VERSION="${{ github.event.inputs.openwrt_version }}"
           TARGET="${{ matrix.target }}"
           SUBTARGET="${{ matrix.subtarget }}"
+          VERSION="${{ github.event.inputs.openwrt_version }}"
 
-          BASE_URL=$([ "$VERSION" = "SNAPSHOT" ] && echo "https://downloads.openwrt.org/snapshots/targets/$TARGET/$SUBTARGET/" || echo "https://downloads.openwrt.org/releases/$VERSION/targets/$TARGET/$SUBTARGET/")
-          SDK_URL=$(curl -s "$BASE_URL" | grep -oP 'href="openwrt-sdk[^"]+\.(tar\.zst|tar\.xz)"' | sed 's/href="//;s/"$//' | head -n1)
+          if [ "$VERSION" = "SNAPSHOT" ]; then
+            BASE_URL="https://downloads.openwrt.org/snapshots/targets/$TARGET/$SUBTARGET/"
+          else
+            BASE_URL="https://downloads.openwrt.org/releases/$VERSION/targets/$TARGET/$SUBTARGET/"
+          fi
+
+          SDK_URL=$(curl -s "$BASE_URL" | grep -oP 'href="openwrt-sdk[^"]+\.(tar\.zst|tar\.xz)"' | sed -e 's/href="//' -e 's/"$//' | head -n1)
           if [ -z "$SDK_URL" ]; then
-            echo "SDK file not found for $TARGET/$SUBTARGET."
+            echo "SDK not found for $TARGET/$SUBTARGET"
             exit 1
           fi
+
           curl -fsLO "${BASE_URL}${SDK_URL}"
           tar -xf "$(basename "$SDK_URL")"
           rm -f *.tar.zst *.tar.xz
           mv openwrt-sdk* openwrt
 
-      - name: Copy Makefile to SDK package
+      - name: Copy Makefile to SDK
         run: |
           mkdir -p openwrt/package/opera-proxy
           cp opera-proxy/openwrt-package/Makefile openwrt/package/opera-proxy/
@@ -119,9 +95,9 @@ EOF
       - name: Create source tarball
         run: |
           mkdir -p openwrt/dl
-          mkdir -p temp/opera-proxy
-          rsync -av --exclude=.git opera-proxy/ temp/opera-proxy/
-          tar -czf openwrt/dl/opera-proxy.tar.gz -C temp .
+          mkdir -p temp/opera-proxy-src
+          rsync -av --exclude=.git opera-proxy/ temp/opera-proxy-src/
+          tar -czf openwrt/dl/opera-proxy-1.0.0.tar.gz -C temp opera-proxy-src
           rm -rf temp
 
       - name: Update feeds
@@ -131,13 +107,12 @@ EOF
           ./scripts/feeds install -a
           cd ..
 
-      - name: Prepare default config
+      - name: Prepare config
         run: |
           cd openwrt
           make defconfig
           echo "CONFIG_PACKAGE_opera-proxy=y" >> .config
           make oldconfig
-          grep "CONFIG_PACKAGE_opera-proxy" .config || (echo "Package not enabled!" && exit 1)
           cd ..
 
       - name: Compile opera-proxy
@@ -146,8 +121,9 @@ EOF
           make package/opera-proxy/compile V=s
           cd ..
 
-      - name: Upload artifact
+      - name: Upload compiled package
         uses: actions/upload-artifact@v4
         with:
           name: opera-proxy-${{ github.event.inputs.openwrt_version }}-${{ matrix.target }}-${{ matrix.subtarget }}
           path: openwrt/bin/packages/**/opera-proxy*.apk
+          if-no-files-found: error
