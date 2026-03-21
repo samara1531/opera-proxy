@@ -17,7 +17,7 @@ define Package/opera-proxy
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Opera VPN/Proxy service
-  URL:=https://github.com/Alexey71/opera-proxy
+  URL:=https://github.com/samara1531/opera-proxy
   DEPENDS:=+ca-bundle
 endef
 
