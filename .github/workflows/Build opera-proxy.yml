@@ -1,12 +1,12 @@
-name: Build Multi-Target opera-proxy
+name: Multi-Target Build opera-proxy
 
 on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: "OpenWrt version (SNAPSHOT or release like 25.12.1)"
+        description: "OpenWrt version (например, 25.12.1 или SNAPSHOT)"
         required: true
-        default: "SNAPSHOT"
+        default: "25.12.1"
       opera_proxy_ref:
         description: "opera-proxy branch/tag/commit"
         required: true
@@ -32,11 +32,15 @@ jobs:
         id: set-matrix
         run: |
           VERSION="${{ github.event.inputs.openwrt_version }}"
-          MATRIX=$(node index.js "$VERSION" | jq -c '{include: .}')
+          RAW_MATRIX=$(node index.js "$VERSION" || echo '[]')
+          MATRIX=$(jq -n --argjson arr "$RAW_MATRIX" '{include: $arr}')
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "Matrix generated:"
+          echo "$MATRIX"
 
   build-opera-proxy:
     needs: generate-matrix
+    if: ${{ needs.generate-matrix.outputs.matrix != '{"include":[]}' }}
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -49,7 +53,7 @@ jobs:
           ref: ${{ github.event.inputs.opera_proxy_ref }}
           fetch-depth: 0
 
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt update
           sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd
@@ -69,7 +73,7 @@ jobs:
 
           SDK_URL=$(curl -s "$BASE_URL" | grep -oP 'href="openwrt-sdk[^"]+\.(tar\.zst|tar\.xz)"' | sed -e 's/href="//' -e 's/"$//' | head -n1)
           if [ -z "$SDK_URL" ]; then
-            echo "⚠️ SDK file not found for $TARGET/$SUBTARGET"
+            echo "SDK not found for $TARGET/$SUBTARGET"
             exit 1
           fi
 
@@ -86,9 +90,9 @@ jobs:
       - name: Create source tarball
         run: |
           mkdir -p openwrt/dl
-          mkdir -p temp/opera-proxy
-          rsync -av --exclude=.git opera-proxy/ temp/opera-proxy/
-          tar -czf openwrt/dl/opera-proxy.tar.gz -C temp opera-proxy
+          mkdir -p temp/opera-proxy-src
+          rsync -av --exclude=.git opera-proxy/ temp/opera-proxy-src/
+          tar -czf openwrt/dl/opera-proxy-1.0.0.tar.gz -C temp .
           rm -rf temp
 
       - name: Update feeds
