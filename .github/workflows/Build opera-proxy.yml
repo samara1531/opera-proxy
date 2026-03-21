@@ -1,4 +1,4 @@
-name: Build opera-proxy for all OpenWrt architectures
+name: Build opera-proxy for all OpenWrt targets
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ on:
         default: "master"
 
 jobs:
-  build-all:
+  build:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
@@ -25,76 +25,85 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd curl nodejs npm jq
+          sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd curl jq
 
-      - name: Fetch architectures
+      - name: Determine package format
+        id: pkg
         run: |
           VERSION="${{ github.event.inputs.openwrt_version }}"
-          URL="https://downloads.openwrt.org/releases/${VERSION}/packages/"
-          echo "Fetching architectures from $URL"
-
-          # Получаем все папки (архитектуры) и сохраняем в файл
-          curl -s "$URL" | grep -oP 'href="\K[^"/]+(?=/")' > archs.txt
-
-          echo "Found architectures:"
-          cat archs.txt
-
-      - name: Build opera-proxy for each architecture
-        run: |
-          VERSION="${{ github.event.inputs.openwrt_version }}"
-
-          # Определяем формат пакета
           if [[ "$VERSION" == "SNAPSHOT" || "$VERSION" =~ ^25\.12\. ]]; then
-            EXT=apk
+            echo "ext=apk" >> $GITHUB_OUTPUT
           else
-            EXT=ipk
-          fi
-          echo "Package format: $EXT"
+            echo "ext=ipk" >> $GITHUB_OUTPUT
 
-          ARCHS=$(cat archs.txt)
+      - name: Fetch all targets and subtargets
+        id: targets
+        run: |
+          VERSION="${{ github.event.inputs.openwrt_version }}"
+          BASE_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/"
 
-          for ARCH in $ARCHS; do
-            echo "================ Build for $ARCH ================"
+          echo "Fetching targets from $BASE_URL"
+          curl -s "$BASE_URL" | grep -oP 'href="\K[^"/]+(?=/")' > targets.txt
 
-            # SDK (берём первый доступный SDK, универсально для всех архитектур)
-            BASE_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/*/*/"
-            SDK_NAME=$(curl -s $BASE_URL | grep -oP 'openwrt-sdk[^"]+\.tar\.(zst|xz)' | head -n1)
-            if [ -z "$SDK_NAME" ]; then
-              echo "SDK not found, skipping $ARCH"
-              continue
-            fi
+          echo "Targets found:"
+          cat targets.txt
 
-            wget -q "${BASE_URL}${SDK_NAME}"
-            tar -xf "$SDK_NAME"
-            mv openwrt-sdk* openwrt
+          mkdir -p subtargets
+          while read TARGET; do
+            curl -s "${BASE_URL}${TARGET}/" | grep -oP 'href="\K[^"/]+(?=/")' > "subtargets/${TARGET}.txt"
+          done < targets.txt
 
-            # Копируем Makefile пакета
-            mkdir -p openwrt/package/opera-proxy
-            cp opera-proxy/openwrt-package/Makefile openwrt/package/opera-proxy/
+      - name: Build opera-proxy for each target/subtarget
+        run: |
+          VERSION="${{ github.event.inputs.openwrt_version }}"
+          EXT="${{ steps.pkg.outputs.ext }}"
 
-            # Создаём исходный tarball
-            mkdir -p openwrt/dl
-            mkdir -p temp/opera-proxy-1.15.0
-            rsync -a --exclude=.git opera-proxy/ temp/opera-proxy-1.15.0/
-            tar -czf openwrt/dl/opera-proxy-1.15.0.tar.gz -C temp .
-            rm -rf temp
+          while read TARGET; do
+            while read SUBTARGET; do
+              echo "================ Build for $TARGET / $SUBTARGET ================"
 
-            # Сборка
-            cd openwrt
-            ./scripts/feeds update -a
-            ./scripts/feeds install golang
+              # Скачиваем SDK
+              SDK_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}/${SUBTARGET}/openwrt-sdk-${VERSION}-${TARGET}-${SUBTARGET}_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+              if ! wget -q --spider "$SDK_URL"; then
+                echo "SDK not found for $TARGET/$SUBTARGET, skipping..."
+                continue
+              fi
 
-            make defconfig
-            echo "CONFIG_PACKAGE_opera-proxy=y" >> .config
-            make oldconfig
+              wget -q "$SDK_URL"
+              tar -xf "$(basename $SDK_URL)"
+              mv openwrt-sdk* openwrt
 
-            make package/opera-proxy/compile -j$(nproc) V=s
-            cd ..
+              # Копируем Makefile пакета
+              mkdir -p openwrt/package/opera-proxy
+              cp opera-proxy/openwrt-package/Makefile openwrt/package/opera-proxy/
 
-            # Сохраняем артефакт
-            mkdir -p artifacts/$ARCH
-            cp openwrt/bin/packages/**/opera-proxy*.$EXT artifacts/$ARCH/ 2>/dev/null || true
-          done
+              # Создаём исходный tarball
+              mkdir -p openwrt/dl
+              mkdir -p temp/opera-proxy-1.15.0
+              rsync -a --exclude=.git opera-proxy/ temp/opera-proxy-1.15.0/
+              tar -czf openwrt/dl/opera-proxy-1.15.0.tar.gz -C temp .
+              rm -rf temp
+
+              # Сборка
+              cd openwrt
+              ./scripts/feeds update -a
+              ./scripts/feeds install golang
+
+              make defconfig
+              echo "CONFIG_PACKAGE_opera-proxy=y" >> .config
+              make oldconfig
+
+              make package/opera-proxy/compile -j$(nproc) V=s
+              cd ..
+
+              # Сохраняем артефакт
+              mkdir -p artifacts/$TARGET/$SUBTARGET
+              cp openwrt/bin/packages/**/opera-proxy*.$EXT artifacts/$TARGET/$SUBTARGET/ 2>/dev/null || true
+
+              # Чистим SDK перед следующим таргетом
+              rm -rf openwrt
+            done < "subtargets/${TARGET}.txt"
+          done < targets.txt
 
       - name: Upload all artifacts
         uses: actions/upload-artifact@v4
