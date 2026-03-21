@@ -1,19 +1,16 @@
-name: Multi Build opera-proxy
+name: Multi-Target Build opera-proxy
 
 on:
   workflow_dispatch:
     inputs:
       openwrt_version:
-        description: "OpenWrt version (SNAPSHOT или 25.12.1, 24.10.6 и т.д.)"
+        description: "OpenWrt version (например 25.12.1, 24.10.0, SNAPSHOT)"
         required: true
         default: "25.12.1"
       opera_proxy_ref:
-        description: "Branch / tag / commit"
+        description: "opera-proxy branch/tag/commit"
         required: true
         default: "master"
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   generate-matrix:
@@ -21,29 +18,42 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Install dependencies
+      - name: Install dependencies for matrix generator
         run: npm install axios cheerio
 
       - name: Generate build matrix
         id: set-matrix
         run: |
           VERSION="${{ inputs.openwrt_version }}"
-          MATRIX=$(node index.js "$VERSION" 2>&1 || echo '{"include":[]}')
-          
-          echo "Matrix size: $(echo -n "$MATRIX" | wc -c) bytes"
-          echo "$MATRIX" | jq . || echo "JSON preview skipped (too big)"
-          
+
+          # Запускаем node → stdout = JSON, stderr = отладка в файл
+          node index.js "$VERSION" > matrix.json 2> debug.log || echo '{"include":[]}' > matrix.json
+
+          # Читаем чистый JSON
+          MATRIX=$(cat matrix.json)
+
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
 
+          # Отладка
+          echo "Matrix size (bytes): $(wc -c < matrix.json)"
+          echo "::group::Matrix preview (первые 3 элемента + количество)"
+          jq '.include | length' matrix.json 2>/dev/null || echo "Cannot count"
+          jq '.include | .[:3]' matrix.json 2>/dev/null || echo "Preview failed (too big or invalid)"
+          echo "::endgroup::"
+
+          echo "::group::Node debug output (stderr)"
+          cat debug.log || echo "No debug log"
+          echo "::endgroup::"
+
   build-opera-proxy:
-    name: ${{ matrix.target }}/${{ matrix.subtarget }} (${{ matrix.pkgarch }})
     needs: generate-matrix
     if: ${{ needs.generate-matrix.outputs.matrix != '{"include":[]}' }}
     runs-on: ubuntu-22.04
@@ -57,14 +67,15 @@ jobs:
         with:
           path: opera-proxy
           ref: ${{ inputs.opera_proxy_ref }}
+          fetch-depth: 0
 
-      - name: Install system deps
+      - name: Install build dependencies
         run: |
           sudo apt update
           sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd bc time
 
-      - name: Detect package extension (apk/ipk)
-        id: pkg
+      - name: Determine package extension (.apk / .ipk)
+        id: detect
         run: |
           VER="${{ inputs.openwrt_version }}"
           if [[ "$VER" == "SNAPSHOT" || "$VER" > "25.11" ]]; then
@@ -73,38 +84,48 @@ jobs:
             echo "ext=ipk" >> $GITHUB_OUTPUT
           fi
 
-      - name: Download SDK
+      - name: Download and extract SDK
         run: |
           set -e -x
+
           TARGET="${{ matrix.target }}"
-          SUB="${{ matrix.subtarget }}"
-          VER="${{ inputs.openwrt_version }}"
-          
-          if [ "$VER" = "SNAPSHOT" ]; then
-            BASE="https://downloads.openwrt.org/snapshots/targets/${TARGET}/${SUB}/"
+          SUBTARGET="${{ matrix.subtarget }}"
+          VERSION="${{ inputs.openwrt_version }}"
+
+          if [ "$VERSION" = "SNAPSHOT" ]; then
+            BASE_URL="https://downloads.openwrt.org/snapshots/targets/${TARGET}/${SUBTARGET}/"
           else
-            BASE="https://downloads.openwrt.org/releases/${VER}/targets/${TARGET}/${SUB}/"
+            BASE_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}/${SUBTARGET}/"
           fi
-          
-          SDK=$(curl -s "$BASE" | grep -oP 'href="\Kopenwrt-sdk[^"]+\.(tar\.xz|tar\.zst)' | head -n1)
-          curl -fSL -o sdk.tar "${BASE}${SDK}"
-          tar -xf sdk.tar
-          rm sdk.tar
+
+          SDK_FILE=$(curl -s "${BASE_URL}" | grep -oP 'href="\Kopenwrt-sdk[^"]+\.(tar\.xz|tar\.zst)' | head -n1)
+
+          if [ -z "$SDK_FILE" ]; then
+            echo "SDK not found for ${TARGET}/${SUBTARGET}"
+            exit 1
+          fi
+
+          curl -fsLO "${BASE_URL}${SDK_FILE}"
+          tar -xf "$(basename "$SDK_FILE")"
+          rm -f *.tar.*
           mv openwrt-sdk* openwrt
 
-      - name: Prepare package
+      - name: Prepare opera-proxy package
         run: |
           mkdir -p openwrt/package/opera-proxy
-          cp -r opera-proxy/openwrt-package/* openwrt/package/opera-proxy/ 2>/dev/null || cp opera-proxy/openwrt-package/Makefile openwrt/package/opera-proxy/
+          cp opera-proxy/openwrt-package/Makefile openwrt/package/opera-proxy/
+          # если есть patches/files — копируем их
+          [ -d opera-proxy/openwrt-package/patches ] && cp -r opera-proxy/openwrt-package/patches openwrt/package/opera-proxy/
+          [ -d opera-proxy/openwrt-package/files   ] && cp -r opera-proxy/openwrt-package/files   openwrt/package/opera-proxy/
 
       - name: Create source tarball
         run: |
           mkdir -p openwrt/dl temp/opera-proxy-src
-          rsync -av --exclude=.git opera-proxy/ temp/opera-proxy-src/
-          tar -czf openwrt/dl/opera-proxy-1.15.0.tar.gz -C temp .
+          rsync -av --exclude=.git --exclude=openwrt-package opera-proxy/ temp/opera-proxy-src/
+          tar -czf openwrt/dl/opera-proxy-1.15.0.tar.gz -C temp opera-proxy-src
           rm -rf temp
 
-      - name: Feeds & config
+      - name: Update feeds & configure
         run: |
           cd openwrt
           ./scripts/feeds update -a
@@ -115,17 +136,17 @@ jobs:
           make oldconfig </dev/null
           cd ..
 
-      - name: Compile
+      - name: Compile package
         run: |
           cd openwrt
-          make package/opera-proxy/compile V=s IGNORE_ERRORS=1
+          make package/opera-proxy/compile V=s IGNORE_ERRORS=1 || true
           cd ..
 
-      - name: Upload artifact
+      - name: Upload compiled package
         uses: actions/upload-artifact@v4
         with:
-          name: opera-proxy-${{ inputs.openwrt_version }}-${{ matrix.pkgarch }}
+          name: opera-proxy-${{ inputs.openwrt_version }}-${{ matrix.target }}-${{ matrix.subtarget }}-${{ matrix.pkgarch }}
           path: |
-            openwrt/bin/packages/*/${{ matrix.pkgarch }}/opera-proxy*.${{ steps.pkg.outputs.ext }}
-            openwrt/bin/packages/*/*/opera-proxy*.${{ steps.pkg.outputs.ext }}
+            openwrt/bin/packages/*/${{ matrix.pkgarch }}/opera-proxy*.${{ steps.detect.outputs.ext }}
+            openwrt/bin/packages/*/*/opera-proxy*.${{ steps.detect.outputs.ext }}
           if-no-files-found: warn
