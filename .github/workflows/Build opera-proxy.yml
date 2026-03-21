@@ -41,6 +41,7 @@ jobs:
             done
           done
 
+          MATRIX=$(echo $MATRIX | jq -c '.')
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
           echo "Matrix generated with $(echo $MATRIX | jq length) items"
 
