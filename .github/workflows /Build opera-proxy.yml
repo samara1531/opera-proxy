@@ -1,0 +1,123 @@
+name: Build opera-proxy (multi-arch universal)
+
+on:
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: "OpenWrt version (e.g. 23.05.5 / 24.10.0 / 25.12.0 / SNAPSHOT)"
+        required: true
+        default: "23.05.5"
+      opera_proxy_ref:
+        description: "opera-proxy ref"
+        required: true
+        default: "master"
+
+jobs:
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.out.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+
+      - run: npm install axios cheerio
+
+      - id: out
+        run: |
+          node .github/scripts/gen-matrix.js ${{ github.event.inputs.openwrt_version }} > matrix.json
+          echo "matrix=$(cat matrix.json)" >> $GITHUB_OUTPUT
+
+  build:
+    needs: generate-matrix
+    runs-on: ubuntu-22.04
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Checkout opera-proxy
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.opera_proxy_ref }}
+          path: opera-proxy
+
+      # 🔥 ЧЁТКАЯ логика формата
+      - name: Detect package format
+        id: pkg
+        run: |
+          VER="${{ github.event.inputs.openwrt_version }}"
+
+          if [[ "$VER" == "SNAPSHOT" || "$VER" =~ ^25\.12\. ]]; then
+            echo "ext=apk" >> $GITHUB_OUTPUT
+          else
+            echo "ext=ipk" >> $GITHUB_OUTPUT
+          fi
+
+          echo "Detected format: $(grep ext $GITHUB_OUTPUT)"
+
+      - name: Install deps
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential git python3 rsync gawk unzip libncurses-dev wget file zstd curl
+
+      - name: Download SDK
+        run: |
+          if [ "${{ github.event.inputs.openwrt_version }}" = "SNAPSHOT" ]; then
+            BASE_URL="https://downloads.openwrt.org/snapshots/targets/${{ matrix.target }}/${{ matrix.subtarget }}/"
+          else
+            BASE_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.openwrt_version }}/targets/${{ matrix.target }}/${{ matrix.subtarget }}/"
+          fi
+
+          echo "Using $BASE_URL"
+
+          SDK=$(curl -s $BASE_URL | grep -oP 'openwrt-sdk[^"]+\.tar\.(zst|xz)' | head -n1)
+
+          if [ -z "$SDK" ]; then
+            echo "No SDK found, skipping"
+            exit 0
+          fi
+
+          wget -q ${BASE_URL}${SDK}
+          tar -xf $SDK
+          mv openwrt-sdk* openwrt
+
+      - name: Add package
+        run: |
+          mkdir -p openwrt/package/opera-proxy
+          cp opera-proxy/openwrt-package/Makefile openwrt/package/opera-proxy/
+
+      - name: Prepare source
+        run: |
+          mkdir -p openwrt/dl
+          mkdir -p temp/opera-proxy-1.15.0
+          rsync -a --exclude=.git opera-proxy/ temp/opera-proxy-1.15.0/
+          tar -czf openwrt/dl/opera-proxy-1.15.0.tar.gz -C temp .
+          rm -rf temp
+
+      - name: Feeds + config
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install golang
+
+          make defconfig
+          echo "CONFIG_PACKAGE_opera-proxy=y" >> .config
+          make oldconfig
+
+      - name: Compile
+        run: |
+          cd openwrt
+          make package/opera-proxy/compile -j$(nproc) V=s
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: opera-proxy-${{ matrix.pkgarch }}
+          path: |
+            openwrt/bin/packages/**/opera-proxy*.${{ steps.pkg.outputs.ext }}
+            openwrt/bin/packages/**/opera-proxy*.ipk
+            openwrt/bin/packages/**/opera-proxy*.apk
+          if-no-files-found: error
