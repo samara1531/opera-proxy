@@ -26,8 +26,6 @@ define Build/Compile
 		cd $(PKG_BUILD_DIR); \
 		export GO111MODULE=on; \
 		export GOPROXY=https://proxy.golang.org; \
-		export GOOS=linux; \
-		export GOARCH=arm64; \
 		export CGO_ENABLED=0; \
 		go mod tidy; \
 		go build -o opera-proxy . ; \
