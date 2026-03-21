@@ -1,5 +1,4 @@
 name: Multi-Target Build opera-proxy
-
 on:
   workflow_dispatch:
     inputs:
@@ -37,20 +36,14 @@ jobs:
         id: set-matrix
         run: |
           VERSION="${{ inputs.openwrt_version }}"
-
-          # Запускаем node → stdout = чистый JSON, stderr → файл отладки
           node index.js "$VERSION" > matrix.json 2> debug.log || echo '{"include":[]}' > matrix.json
-
           MATRIX=$(cat matrix.json)
-
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
-
           echo "Matrix size (bytes): $(wc -c < matrix.json)"
           echo "::group::Matrix preview"
           jq '.include | length' matrix.json 2>/dev/null || echo "Cannot count entries"
           jq '.include | .[:3]' matrix.json 2>/dev/null || echo "Preview too large or invalid"
           echo "::endgroup::"
-
           echo "::group::Node debug output (stderr)"
           cat debug.log || echo "No debug log"
           echo "::endgroup::"
@@ -63,7 +56,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
-
     steps:
       - name: Checkout opera-proxy (again, for build)
         uses: actions/checkout@v4
@@ -75,10 +67,8 @@ jobs:
       - name: Install build system dependencies
         run: |
           sudo apt update
-          sudo apt install -y \
-            build-essential git python3 rsync gawk unzip \
-            libncurses-dev wget file zstd bc time \
-            patchutils subversion
+          sudo apt install -y build-essential git python3 rsync gawk unzip \
+            libncurses-dev wget file zstd bc time patchutils subversion
 
       - name: Determine package extension (.apk or .ipk)
         id: pkg_ext
@@ -93,27 +83,20 @@ jobs:
       - name: Download and extract OpenWrt SDK
         run: |
           set -e -x
-
           TARGET="${{ matrix.target }}"
           SUBTARGET="${{ matrix.subtarget }}"
           VERSION="${{ inputs.openwrt_version }}"
-
           if [ "$VERSION" = "SNAPSHOT" ]; then
             BASE_URL="https://downloads.openwrt.org/snapshots/targets/${TARGET}/${SUBTARGET}/"
           else
             BASE_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}/${SUBTARGET}/"
           fi
-
-          SDK_FILE=$(curl -s --fail "$BASE_URL" \
-            | grep -oP 'href="\Kopenwrt-sdk[^"]+\.(tar\.xz|tar\.zst)' \
-            | head -n1 || true)
-
+          SDK_FILE=$(curl -s --fail "$BASE_URL" | grep -oP 'href="\Kopenwrt-sdk[^"]+\.(tar\.xz|tar\.zst)' | head -n1 || true)
           if [ -z "$SDK_FILE" ]; then
             echo "SDK not found in $BASE_URL"
             curl -s "$BASE_URL" | grep -i sdk || true
             exit 1
           fi
-
           curl --retry 3 --fail -L -o sdk.tar "${BASE_URL}${SDK_FILE}"
           tar -xf sdk.tar
           rm -f sdk.tar
@@ -124,11 +107,8 @@ jobs:
           echo "=== Диагностика структуры ==="
           ls -la opera-proxy/ || true
           ls -la opera-proxy/openwrt-package/ 2>/dev/null || echo "openwrt-package not found"
-
           mkdir -p openwrt/package/opera-proxy
-
           SOURCE_DIR="opera-proxy/openwrt-package"
-
           if [ -f "$SOURCE_DIR/Makefile" ]; then
             cp "$SOURCE_DIR/Makefile" openwrt/package/opera-proxy/
             echo "Makefile copied"
@@ -136,17 +116,21 @@ jobs:
             echo "Makefile not found in $SOURCE_DIR"
             exit 1
           fi
-
-          # Опционально копируем patches и files, если есть
           cp -r "$SOURCE_DIR/patches" openwrt/package/opera-proxy/ 2>/dev/null || true
-          cp -r "$SOURCE_DIR/files"   openwrt/package/opera-proxy/ 2>/dev/null || true
+          cp -r "$SOURCE_DIR/files" openwrt/package/opera-proxy/ 2>/dev/null || true
 
       - name: Create source tarball
         run: |
-          mkdir -p openwrt/dl temp/opera-proxy-src
-          rsync -av --exclude=.git --exclude=openwrt-package opera-proxy/ temp/opera-proxy-src/
-          tar -czf openwrt/dl/opera-proxy-1.15.0.tar.gz -C temp opera-proxy-src
+          set -e -x
+          # Берём версию динамически из твоего Makefile (чтобы не было расхождений)
+          PKG_VERSION=$(grep -oP 'PKG_VERSION:=\K[^[:space:]]+' openwrt/package/opera-proxy/Makefile || echo "1.15.0")
+          echo "Detected PKG_VERSION for source tarball: ${PKG_VERSION}"
+
+          mkdir -p openwrt/dl temp/opera-proxy-${PKG_VERSION}
+          rsync -av --exclude=.git --exclude=openwrt-package opera-proxy/ temp/opera-proxy-${PKG_VERSION}/
+          tar -czf openwrt/dl/opera-proxy-${PKG_VERSION}.tar.gz -C temp opera-proxy-${PKG_VERSION}
           rm -rf temp
+          echo "Source tarball created: openwrt/dl/opera-proxy-${PKG_VERSION}.tar.gz"
 
       - name: Update feeds and configure
         run: |
