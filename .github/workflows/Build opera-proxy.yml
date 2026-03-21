@@ -6,7 +6,7 @@ on:
       openwrt_version:
         description: "OpenWrt version (23.x / 24.x / 25.12.x / SNAPSHOT)"
         required: true
-        default: "23.05.5"
+        default: "25.12.1"
       opera_proxy_ref:
         description: "opera-proxy ref"
         required: true
