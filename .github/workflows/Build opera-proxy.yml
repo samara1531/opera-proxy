@@ -11,7 +11,7 @@ jobs:
     strategy:
       matrix:
         os: [linux, windows]
-        arch: [amd64, arm64, 386, arm, mipsle]
+        arch: [amd64, arm64, arm, 386, mipsle]
         exclude:
           - os: windows
             arch: arm
@@ -43,12 +43,30 @@ jobs:
           if [ "${{ matrix.os }}" = "windows" ]; then EXT=".exe"; fi
           OUTPUT=bin/opera-proxy-${{ matrix.os }}-${{ matrix.arch }}$EXT
           mkdir -p bin
-          # Сборка с оптимизацией размера (-s -w)
-          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -ldflags="-s -w" -o $OUTPUT ./
-          # Сжать бинарник через UPX для Linux
+
+          # Для ARMv7 (32-bit)
+          if [ "${{ matrix.arch }}" = "arm" ]; then
+            export GOARM=7
+          fi
+
+          # Сборка
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} \
+            go build -a -tags netgo -trimpath \
+            -ldflags="-s -w" \
+            -o $OUTPUT ./
+          else
+            CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} \
+            go build -a -tags netgo -trimpath \
+            -ldflags="-s -w -extldflags '-static'" \
+            -o $OUTPUT ./
+          fi
+
+          # Сжатие Linux бинарника через UPX
           if [ "${{ matrix.os }}" = "linux" ]; then
             upx --best $OUTPUT || echo "UPX failed, continue"
           fi
+
           ls -lh bin/
 
       - name: Release
