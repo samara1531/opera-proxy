@@ -1,8 +1,6 @@
 opera-proxy
 ===========
 
-[![opera-proxy](https://snapcraft.io//opera-proxy/badge.svg)](https://snapcraft.io/opera-proxy)
-
 Standalone Opera VPN client.
 
 Just run it and it'll start a plain HTTP proxy server forwarding traffic through "Opera VPN" proxies of your choice.
@@ -40,14 +38,6 @@ docker run -d \
     --restart unless-stopped \
     --name opera-proxy \
     yarmak/opera-proxy
-```
-
-#### Snap Store
-
-[![Get it from the Snap Store](https://snapcraft.io/static/images/badges/en/snap-store-black.svg)](https://snapcraft.io/opera-proxy)
-
-```bash
-sudo snap install opera-proxy
 ```
 
 ## Usage
