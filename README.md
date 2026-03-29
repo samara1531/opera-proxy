@@ -108,6 +108,3 @@ eu3.sec-tunnel.com,77.111.244.22,443
 | version | - | show program version and exit |
 | socks-mode | - | listen for SOCKS requests instead of HTTP |
 
-## See also
-
-* [Community in Telegram](https://t.me/alternative_proxy)
