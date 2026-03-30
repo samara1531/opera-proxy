@@ -3,7 +3,7 @@ name: docker-ci
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'vvv*.*.*'
 
 jobs:
   docker:
