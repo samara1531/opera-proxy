@@ -45,8 +45,8 @@ jobs:
           mkdir -p bin
           # Сборка с оптимизацией размера (-s -w)
           GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -ldflags="-s -w" -o $OUTPUT ./
-          # Сжать бинарник через UPX для Linux
-          if [ "${{ matrix.os }}" = "linux" ]; then
+          # Сжать бинарник через UPX только для Linux arm64 и mipsle
+          if [ "${{ matrix.os }}" = "linux" ] && [[ "${{ matrix.arch }}" == "arm64" || "${{ matrix.arch }}" == "mipsle" ]]; then
             upx --best $OUTPUT || echo "UPX failed, continue"
           fi
           ls -lh bin/
