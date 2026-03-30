@@ -1,17 +1,22 @@
 name: Build Multi Binaries
-
 on:
   push:
     tags:
-      - 'v*.*.*'   # срабатывает на семантические теги, например v1.15.0
+      - 'v*.*.*'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [linux]
-        arch: [amd64]
+        os: [linux, windows]
+        arch: [amd64, arm64, 386, arm, mipsle]
+        exclude:
+          - os: windows
+            arch: arm
+          - os: windows
+            arch: mipsle
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,9 +24,10 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: 'stable'
+          cache: true
 
       - name: Read tag
         id: tag
@@ -33,22 +39,45 @@ jobs:
 
       - name: Build binary
         run: |
-          echo "Building for ${{ matrix.os }}/ ${{ matrix.arch }}"
+          set -e
+          echo "Building for ${{ matrix.os }}/${{ matrix.arch }}"
+
           EXT=""
           if [ "${{ matrix.os }}" = "windows" ]; then EXT=".exe"; fi
-          OUTPUT=bin/opera-proxy-${{ matrix.os }}-${{ matrix.arch }}$EXT
+
+          OUTPUT="bin/opera-proxy-${{ matrix.os }}-${{ matrix.arch }}${EXT}"
           mkdir -p bin
-          # Сборка с оптимизацией размера (-s -w)
-          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -ldflags="-s -w" -o $OUTPUT ./
-          # Сжать бинарник через UPX только для Linux arm64 и mipsle
-          if [ "${{ matrix.os }}" = "linux" ] && [[ "${{ matrix.arch }}" == "arm64" || "${{ matrix.arch }}" == "mipsle" ]]; then
-            upx --best $OUTPUT || echo "UPX failed, continue"
+
+          # === Оптимизации специально под твою проблему ===
+          BUILD_FLAGS="-ldflags=-s -w"
+          export CGO_ENABLED=0
+
+          if [ "${{ matrix.os }}" = "linux" ] && [ "${{ matrix.arch }}" = "amd64" ]; then
+            export GOAMD64=v3          # ← Самое важное для Celeron 6305 / N100 / Jasper Lake
+            echo "→ Using GOAMD64=v3 for better performance on Intel x86"
           fi
+
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build $BUILD_FLAGS -o "$OUTPUT" ./
+
+          # Сжимаем UPX только маленькие бинарники (как было у тебя)
+          if [ "${{ matrix.os }}" = "linux" ] && [[ "${{ matrix.arch }}" == "arm64" || "${{ matrix.arch }}" == "mipsle" ]]; then
+            upx --best "$OUTPUT" || echo "UPX skipped"
+          fi
+
           ls -lh bin/
+          echo "Built: $OUTPUT"
+
+      - name: Generate checksums
+        run: |
+          cd bin
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          files: bin/*
+          files: |
+            bin/*
           tag_name: ${{ steps.tag.outputs.tag }}
           generate_release_notes: true
+          draft: false
