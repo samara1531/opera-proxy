@@ -11,6 +11,7 @@ jobs:
       matrix:
         os: [linux]
         arch: [amd64]
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,7 +28,7 @@ jobs:
         id: tag
         run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
-      - name: Install UPX (for compression)
+      - name: Install UPX
         if: matrix.os == 'linux'
         run: sudo apt-get update && sudo apt-get install -y upx-ucl
 
@@ -42,18 +43,18 @@ jobs:
           OUTPUT="bin/opera-proxy-${{ matrix.os }}-${{ matrix.arch }}${EXT}"
           mkdir -p bin
 
-          # === Оптимизации специально под твою проблему ===
-          BUILD_FLAGS="-ldflags=-s -w"
           export CGO_ENABLED=0
 
           if [ "${{ matrix.os }}" = "linux" ] && [ "${{ matrix.arch }}" = "amd64" ]; then
-            export GOAMD64=v3          # ← Самое важное для Celeron 6305 / N100 / Jasper Lake
-            echo "→ Using GOAMD64=v3 for better performance on Intel x86"
+            export GOAMD64=v3
+            echo "→ Using GOAMD64=v3 for better performance on Intel x86 (Celeron 6305)"
           fi
 
-          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build $BUILD_FLAGS -o "$OUTPUT" ./
+          LDFLAGS="-s -w"
 
-          # Сжимаем UPX только маленькие бинарники (как было у тебя)
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} \
+            go build -ldflags "$LDFLAGS" -o "$OUTPUT" ./
+
           if [ "${{ matrix.os }}" = "linux" ] && [[ "${{ matrix.arch }}" == "arm64" || "${{ matrix.arch }}" == "mipsle" ]]; then
             upx --best "$OUTPUT" || echo "UPX skipped"
           fi
@@ -74,4 +75,3 @@ jobs:
             bin/*
           tag_name: ${{ steps.tag.outputs.tag }}
           generate_release_notes: true
-          draft: false
