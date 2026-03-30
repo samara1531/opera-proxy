@@ -9,14 +9,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [linux, windows]
-        arch: [amd64, arm64, 386, arm, mipsle]
-        exclude:
-          - os: windows
-            arch: arm
-          - os: windows
-            arch: mipsle
-
+        os: [linux]
+        arch: [amd64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
