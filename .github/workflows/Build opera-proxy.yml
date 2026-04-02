@@ -47,7 +47,7 @@ jobs:
 
           if [ "${{ matrix.os }}" = "linux" ] && [ "${{ matrix.arch }}" = "amd64" ]; then
             export GOAMD64=v3
-            echo "→ Using GOAMD64=v3 for better performance on Intel x86 (Celeron 6305)"
+            echo "→ Using GOAMD64=v3 for better performance on Intel x86"
           fi
 
           LDFLAGS="-s -w"
