@@ -1,0 +1,82 @@
+name: Build Multi Binaries
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [linux, windows]
+        arch: [amd64, arm64]
+        exclude:
+          - os: windows
+            arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Read tag
+        id: tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Install UPX
+        if: matrix.os == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y upx-ucl
+
+      - name: Build binary
+        run: |
+          set -e
+          echo "Building for ${{ matrix.os }}/${{ matrix.arch }}"
+
+          EXT=""
+          if [ "${{ matrix.os }}" = "windows" ]; then EXT=".exe"; fi
+
+          OUTPUT="bin/opera-proxy-${{ matrix.os }}-${{ matrix.arch }}${EXT}"
+          mkdir -p bin
+
+          export CGO_ENABLED=0
+
+          # Оптимизация только для amd64
+          if [ "${{ matrix.os }}" = "linux" ] && [ "${{ matrix.arch }}" = "amd64" ]; then
+            export GOAMD64=v3
+            echo "→ Using GOAMD64=v3"
+          fi
+
+          LDFLAGS="-s -w"
+
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} \
+            go build -ldflags "$LDFLAGS" -o "$OUTPUT" ./
+
+          # Сжатие ТОЛЬКО для linux/arm64
+          if [ "${{ matrix.os }}" = "linux" ] && [ "${{ matrix.arch }}" = "arm64" ]; then
+            upx --best "$OUTPUT" || echo "UPX skipped"
+          fi
+
+          ls -lh bin/
+          echo "Built: $OUTPUT"
+
+      - name: Generate checksums
+        run: |
+          cd bin
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bin/*
+          tag_name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
