@@ -87,7 +87,7 @@ $ ./opera-proxy -api-proxy-list-url https://example.com/proxies.txt -country EU
 $ ./opera-proxy -api-proxy-list-url https://example.com/proxies.txt -api-proxy-file proxies.txt -country EU
 ```
 
-You can free download proxy servers into a file named `proxies.txt`, use `-fetch-freeproxy-out`. The file name and path can be anything (`D:\myproxy.txt`, `xxxxx.txt`). By default, the `proxies.txt` file is created alongside the `opera-proxy` binary.
+You can free download proxy servers (default `https://advanced.name/freeproxy`) into a file named `proxies.txt`, use `-fetch-freeproxy-out`. The file name and path can be anything (`D:\myproxy.txt`, `xxxxx.txt`). By default, the `proxies.txt` file is created alongside the `opera-proxy` binary.
 
 ```
 $ ./opera-proxy -fetch-freeproxy-out proxies.txt
@@ -131,7 +131,7 @@ If SurfEasy discover returns API error `801`, the app also automatically tries `
 | -country | String | desired proxy location (default "EU") |
 | -discover-csv | String | read proxy endpoints from CSV instead of SurfEasy discover API |
 | -dp-export | - | export configuration for dumbproxy |
-| -fetch-freeproxy-out | - | Downloads free proxies. Examples: `-fetch-freeproxy-out proxies.txt` or `-fetch-freeproxy-out D:\myproxy.txt` |
+| -fetch-freeproxy-out | - | download proxy list from `https://advanced.name/freeproxy` and save it as a text file with one ip:port per line. Examples: `-fetch-freeproxy-out proxies.txt` or `-fetch-freeproxy-out D:\myproxy.txt` |
 | -fake-SNI | String | domain name to use as SNI in outbound TLS and in tunneled TLS ClientHello when possible |
 | -init-retries | Number | number of attempts for initialization steps, zero for unlimited retry |
 | -init-retry-interval | Duration | delay between initialization retries (default 5s) |

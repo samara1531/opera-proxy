@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -16,10 +15,10 @@ import (
 )
 
 const (
-	ANON_EMAIL_LOCALPART_BYTES       = 32
-	ANON_PASSWORD_BYTES              = 20
-	DEVICE_ID_BYTES                  = 20
-	READ_LIMIT                 int64 = 128 * 1024
+	ANON_EMAIL_LOCALPART_BYTES = 32
+	ANON_PASSWORD_BYTES        = 20
+	DEVICE_ID_BYTES            = 20
+	READ_LIMIT           int64 = 128 * 1024
 )
 
 type SEEndpoints struct {
@@ -73,9 +72,10 @@ type SEClient struct {
 
 type StrKV map[string]string
 
-// Instantiates SurfEasy client with default settings and given API keys.
-// Optional `transport` parameter allows to override HTTP transport used
-// for HTTP calls
+// NewSEClient instantiates a SurfEasy client.
+// apiUsername/apiSecret are the application-level Digest Auth credentials
+// embedded in every Opera client — they are NOT per-user and must not be randomised.
+// transport may be nil (uses http.DefaultTransport).
 func NewSEClient(apiUsername, apiSecret string, transport http.RoundTripper) (*SEClient, error) {
 	if transport == nil {
 		transport = http.DefaultTransport
@@ -83,7 +83,7 @@ func NewSEClient(apiUsername, apiSecret string, transport http.RoundTripper) (*S
 
 	rng := rand.New(RandomSource)
 
-	device_id, err := randomCapitalHexString(rng, DEVICE_ID_BYTES)
+	deviceID, err := randomCapitalHexString(rng, DEVICE_ID_BYTES)
 	if err != nil {
 		return nil, err
 	}
@@ -93,17 +93,15 @@ func NewSEClient(apiUsername, apiSecret string, transport http.RoundTripper) (*S
 		return nil, err
 	}
 
-	res := &SEClient{
+	return &SEClient{
 		httpClient: &http.Client{
 			Jar:       jar,
 			Transport: dac.NewDigestTransport(apiUsername, apiSecret, transport),
 		},
 		Settings: DefaultSESettings,
 		rng:      rng,
-		DeviceID: device_id,
-	}
-
-	return res, nil
+		DeviceID: deviceID,
+	}, nil
 }
 
 func (c *SEClient) ResetCookies() error {
@@ -125,6 +123,8 @@ func (c *SEClient) AnonRegister(ctx context.Context) error {
 		return err
 	}
 
+	// Each run generates a fresh random subscriber identity — this is the
+	// actual anonymisation layer. The API-level credentials above are fixed.
 	c.SubscriberEmail = fmt.Sprintf("%s@%s.best.vpn", localPart, c.Settings.ClientType)
 	c.SubscriberPassword = capitalHexSHA1(c.SubscriberEmail)
 
@@ -138,13 +138,12 @@ func (c *SEClient) Register(ctx context.Context) error {
 }
 
 func (c *SEClient) register(ctx context.Context) error {
-	err := c.resetCookies()
-	if err != nil {
+	if err := c.resetCookies(); err != nil {
 		return err
 	}
 
 	var regRes SERegisterSubscriberResponse
-	err = c.rpcCall(ctx, c.Settings.Endpoints.RegisterSubscriber, StrKV{
+	err := c.rpcCall(ctx, c.Settings.Endpoints.RegisterSubscriber, StrKV{
 		"email":    c.SubscriberEmail,
 		"password": c.SubscriberPassword,
 	}, &regRes)
@@ -225,13 +224,12 @@ func (c *SEClient) Login(ctx context.Context) error {
 	c.Mux.Lock()
 	defer c.Mux.Unlock()
 
-	err := c.resetCookies()
-	if err != nil {
+	if err := c.resetCookies(); err != nil {
 		return err
 	}
 
 	var loginRes SESubscriberLoginResponse
-	err = c.rpcCall(ctx, c.Settings.Endpoints.SubscriberLogin, StrKV{
+	err := c.rpcCall(ctx, c.Settings.Endpoints.SubscriberLogin, StrKV{
 		"login":       c.SubscriberEmail,
 		"password":    c.SubscriberPassword,
 		"client_type": c.Settings.ClientType,
@@ -287,16 +285,12 @@ func (c *SEClient) RpcCall(ctx context.Context, endpoint string, params map[stri
 }
 
 func (c *SEClient) rpcCall(ctx context.Context, endpoint string, params map[string]string, res interface{}) error {
-	input := make(url.Values)
+	input := make(url.Values, len(params))
 	for k, v := range params {
 		input[k] = []string{v}
 	}
-	req, err := http.NewRequestWithContext(
-		ctx,
-		"POST",
-		endpoint,
-		strings.NewReader(input.Encode()),
-	)
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint,
+		strings.NewReader(input.Encode()))
 	if err != nil {
 		return err
 	}
@@ -310,26 +304,17 @@ func (c *SEClient) rpcCall(ctx context.Context, endpoint string, params map[stri
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		cleanupBody(resp.Body)
 		return fmt.Errorf("bad http status: %s, headers: %#v", resp.Status, resp.Header)
 	}
 
-	decoder := json.NewDecoder(resp.Body)
-	err = decoder.Decode(res)
+	err = json.NewDecoder(resp.Body).Decode(res)
 	cleanupBody(resp.Body)
-
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
-// Does cleanup of HTTP response in order to make it reusable by keep-alive
-// logic of HTTP client
+// cleanupBody drains and closes an HTTP response body to allow connection reuse.
 func cleanupBody(body io.ReadCloser) {
-	io.Copy(ioutil.Discard, &io.LimitedReader{
-		R: body,
-		N: READ_LIMIT,
-	})
+	io.Copy(io.Discard, &io.LimitedReader{R: body, N: READ_LIMIT})
 	body.Close()
 }
