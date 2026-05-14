@@ -1070,7 +1070,7 @@ func run() int {
 
 	mainLogger.Info("Starting proxy server...")
 	if args.socksMode {
-		socks, initError := handler.NewSocksServer(handlerDialer, socksLogger, args.fakeSNI)
+		socks, initError := handler.NewSocksServer(handlerDialer, socksLogger)
 		if initError != nil {
 			mainLogger.Critical("Failed to start: %v", initError)
 			return 16
@@ -1078,7 +1078,7 @@ func run() int {
 		mainLogger.Info("Init complete.")
 		err = socks.ListenAndServe("tcp", args.bindAddress)
 	} else {
-		h := handler.NewProxyHandler(handlerDialer, proxyLogger, args.fakeSNI)
+		h := handler.NewProxyHandler(handlerDialer, proxyLogger)
 		mainLogger.Info("Init complete.")
 		err = http.ListenAndServe(args.bindAddress, h)
 	}

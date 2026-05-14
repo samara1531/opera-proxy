@@ -41,10 +41,9 @@ type ProxyHandler struct {
 	logger        *clog.CondLogger
 	dialer        dialer.ContextDialer
 	httptransport http.RoundTripper
-	fakeSNI       string
 }
 
-func NewProxyHandler(dialer dialer.ContextDialer, logger *clog.CondLogger, fakeSNI string) *ProxyHandler {
+func NewProxyHandler(dialer dialer.ContextDialer, logger *clog.CondLogger) *ProxyHandler {
 	httptransport := &http.Transport{
 		MaxIdleConns:          TRANSPORT_MAX_IDLE_CONNS,
 		MaxIdleConnsPerHost:   TRANSPORT_MAX_IDLE_CONNS_PER_HOST,
@@ -57,7 +56,6 @@ func NewProxyHandler(dialer dialer.ContextDialer, logger *clog.CondLogger, fakeS
 		logger:        logger,
 		dialer:        dialer,
 		httptransport: httptransport,
-		fakeSNI:       fakeSNI,
 	}
 }
 
@@ -72,7 +70,7 @@ func (s *ProxyHandler) HandleTunnel(wr http.ResponseWriter, req *http.Request) {
 
 	if req.ProtoMajor == 0 || req.ProtoMajor == 1 {
 		// Upgrade client connection
-		localconn, rw, err := hijack(wr)
+		localconn, _, err := hijack(wr)
 		if err != nil {
 			s.logger.Error("Can't hijack client connection: %v", err)
 			http.Error(wr, "Can't hijack client connection", http.StatusInternalServerError)
@@ -83,16 +81,12 @@ func (s *ProxyHandler) HandleTunnel(wr http.ResponseWriter, req *http.Request) {
 		// Inform client connection is built
 		fmt.Fprintf(localconn, "HTTP/%d.%d 200 OK\r\n\r\n", req.ProtoMajor, req.ProtoMinor)
 
-		clientReader := io.Reader(localconn)
-		if rw != nil && rw.Reader.Buffered() > 0 {
-			clientReader = io.MultiReader(rw.Reader, localconn)
-		}
-		proxy(req.Context(), localconn, clientReader, conn, s.fakeSNI)
+		proxy(req.Context(), localconn, conn)
 	} else if req.ProtoMajor == 2 {
 		wr.Header()["Date"] = nil
 		wr.WriteHeader(http.StatusOK)
 		flush(wr)
-		proxyh2(req.Context(), req.Body, wr, conn, s.fakeSNI)
+		proxyh2(req.Context(), req.Body, wr, conn)
 	} else {
 		s.logger.Error("Unsupported protocol version: %s", req.Proto)
 		http.Error(wr, "Unsupported protocol version.", http.StatusBadRequest)
@@ -138,14 +132,9 @@ func (s *ProxyHandler) ServeHTTP(wr http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func proxy(ctx context.Context, left net.Conn, leftReader io.Reader, right net.Conn, fakeSNI string) {
+func proxy(ctx context.Context, left, right net.Conn) {
 	wg := sync.WaitGroup{}
-	ltr := func(dst net.Conn, src io.Reader) {
-		defer wg.Done()
-		copyWithSNIRewrite(dst, src, fakeSNI)
-		dst.Close()
-	}
-	rtl := func(dst, src net.Conn) {
+	cpy := func(dst, src net.Conn) {
 		defer wg.Done()
 		// Grab a pooled buffer for this copy direction.
 		bufp := copyBufPool.Get().(*[]byte)
@@ -154,8 +143,8 @@ func proxy(ctx context.Context, left net.Conn, leftReader io.Reader, right net.C
 		dst.Close()
 	}
 	wg.Add(2)
-	go ltr(right, leftReader)
-	go rtl(left, right)
+	go cpy(left, right)
+	go cpy(right, left)
 	groupdone := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -172,14 +161,13 @@ func proxy(ctx context.Context, left net.Conn, leftReader io.Reader, right net.C
 	return
 }
 
-func proxyh2(ctx context.Context, leftreader io.ReadCloser, leftwriter io.Writer, right net.Conn, fakeSNI string) {
+func proxyh2(ctx context.Context, leftreader io.ReadCloser, leftwriter io.Writer, right net.Conn) {
 	wg := sync.WaitGroup{}
 	ltr := func(dst net.Conn, src io.Reader) {
 		defer wg.Done()
 		bufp := copyBufPool.Get().(*[]byte)
 		defer copyBufPool.Put(bufp)
 		io.CopyBuffer(dst, src, *bufp)
-		copyWithSNIRewrite(dst, src, fakeSNI)
 		dst.Close()
 	}
 	rtl := func(dst io.Writer, src io.Reader) {
