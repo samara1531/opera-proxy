@@ -132,7 +132,7 @@ If SurfEasy discover returns API error `801`, the app also automatically tries `
 | -discover-csv | String | read proxy endpoints from CSV instead of SurfEasy discover API |
 | -dp-export | - | export configuration for dumbproxy |
 | -fetch-freeproxy-out | - | download proxy list from `https://advanced.name/freeproxy` and save it as a text file with one ip:port per line. Examples: `-fetch-freeproxy-out proxies.txt` or `-fetch-freeproxy-out D:\myproxy.txt` |
-| -fake-SNI | String | domain name to use as SNI in outbound TLS and in tunneled TLS ClientHello when possible |
+| -fake-SNI | String | domain name to use as SNI in communications with servers |
 | -init-retries | Number | number of attempts for initialization steps, zero for unlimited retry |
 | -init-retry-interval | Duration | delay between initialization retries (default 5s) |
 | -list-countries | - | list available countries and exit |
