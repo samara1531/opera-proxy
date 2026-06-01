@@ -149,6 +149,6 @@ If SurfEasy discover returns API error `801`, the app also automatically tries `
 | -server-selection-timeout | Duration | timeout given for server selection function to produce result (default 30s) |
 | -socks-mode | - | listen for SOCKS requests instead of HTTP |
 | -timeout | Duration | timeout for network operations (default 10s) |
-| -verbosity | Number | logging verbosity (10 - debug, 20 - info, 30 - warning, 40 - error, 50 - critical) (default 20) |
+| -verbosity | Number | logging verbosity (10 - debug, 20 - info, 30 - warning, 40 - error, 50 - critical, 60 - silent/no output at all) (default 20) |
 | -version | - | show program version and exit |
 
