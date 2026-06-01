@@ -11,8 +11,8 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/Snawoot/opera-proxy/dialer"
-	clog "github.com/Snawoot/opera-proxy/log"
+	"github.com/Alexey71/opera-proxy/dialer"
+	clog "github.com/Alexey71/opera-proxy/log"
 )
 
 type recordingDialer struct {

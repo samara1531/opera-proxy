@@ -13,6 +13,9 @@ import (
 	"github.com/things-go/go-socks5/statute"
 )
 
+// NewSocksServer creates a SOCKS5 server using the provided dialer.
+// logger controls SOCKS-level diagnostic output; pass a logger backed by
+// io.Discard to suppress all messages (e.g. when verbosity >= SILENT).
 func NewSocksServer(dialer dialer.ContextDialer, logger *log.Logger) (*socks5.Server, error) {
 	opts := []socks5.Option{
 		socks5.WithLogger(socks5.NewLogger(logger)),

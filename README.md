@@ -72,10 +72,10 @@ If direct SurfEasy API access is unstable, you can point discovery at a text fil
 $ ./opera-proxy -api-proxy-file proxies.txt -country EU
 ```
 
-By default it tests up to 5 candidates at once. You can change that with `-api-proxy-parallel`:
+By default it tests up to 15 candidates at once. You can change that with `-api-proxy-parallel`:
 
 ```
-$ ./opera-proxy -api-proxy-file proxies.txt -api-proxy-parallel 5 -country EU
+$ ./opera-proxy -api-proxy-file proxies.txt -api-proxy-parallel 15 -country EU
 ```
 
 You can also download the proxy list from a URL. If the download fails, the app can fall back to a local file:
@@ -122,7 +122,7 @@ If SurfEasy discover returns API error `801`, the app also automatically tries `
 | -api-proxy | String | additional proxy server used to access SurfEasy API |
 | -api-proxy-file | String | path to text file with candidate proxy servers for SurfEasy API access, one per line; proxies are tried in order until init/discover succeeds |
 | -api-proxy-list-url | String | URL of a text file with candidate proxy servers for SurfEasy API access; falls back to `-api-proxy-file` if download fails |
-| -api-proxy-parallel | Number | number of API proxy candidates tested in parallel when `-api-proxy-file` is used (default 5) |
+| -api-proxy-parallel | Number | number of API proxy candidates tested in parallel when `-api-proxy-file` is used (default 15) |
 | -api-user-agent | String | user agent reported to SurfEasy API (default "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 OPR/114.0.0.0") |
 | -bind-address | String | proxy listen address (default "127.0.0.1:18080") |
 | -bootstrap-dns | String | Comma-separated list of DNS/DoH/DoT resolvers for initial discovery of SurfEasy API address. Supported schemes are: `dns://`, `https://`, `tls://`, `tcp://`. Examples: `https://1.1.1.1/dns-query`, `tls://9.9.9.9:853`  (default `https://1.1.1.3/dns-query,https://8.8.8.8/dns-query,https://dns.google/dns-query,https://security.cloudflare-dns.com/dns-query,https://fidelity.vm-0.com/q,https://wikimedia-dns.org/dns-query,https://dns.adguard-dns.com/dns-query,https://dns.quad9.net/dns-query,https://doh.cleanbrowsing.org/doh/adult-filter/`) |
@@ -149,6 +149,6 @@ If SurfEasy discover returns API error `801`, the app also automatically tries `
 | -server-selection-timeout | Duration | timeout given for server selection function to produce result (default 30s) |
 | -socks-mode | - | listen for SOCKS requests instead of HTTP |
 | -timeout | Duration | timeout for network operations (default 10s) |
-| -verbosity | Number | logging verbosity (10 - debug, 20 - info, 30 - warning, 40 - error, 50 - critical) (default 20) |
+| -verbosity | Number | logging verbosity (10 - debug, 20 - info, 30 - warning, 40 - error, 50 - critical, 60 - silent/no output at all) (default 20) |
 | -version | - | show program version and exit |
 
