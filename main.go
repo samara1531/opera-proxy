@@ -1113,6 +1113,7 @@ func run() int {
 	})
 
 	mainLogger.Info("Starting proxy server...")
+	errChan := make(chan error, 1)
 	if args.socksMode {
 		socks, initError := handler.NewSocksServer(handlerDialer, socksLogger)
 		if initError != nil {
@@ -1120,13 +1121,23 @@ func run() int {
 			return 16
 		}
 		mainLogger.Info("Init complete.")
-		err = socks.ListenAndServe("tcp", args.bindAddress)
+		go func() {
+			errChan <- socks.ListenAndServe("tcp", args.bindAddress)
+		}()
 	} else {
 		h := handler.NewProxyHandler(handlerDialer, proxyLogger)
 		mainLogger.Info("Init complete.")
-		err = http.ListenAndServe(args.bindAddress, h)
+		go func() {
+			errChan <- http.ListenAndServe(args.bindAddress, h)
+		}()
 	}
-	mainLogger.Critical("Server terminated with a reason: %v", err)
+
+	select {
+		case <-rootCtx.Done():
+			mainLogger.Info("Server terminated with a reason: %v", context.Cause(rootCtx))
+		case err = <-errChan:
+			mainLogger.Critical("Server terminated with a fatal error: %v", err)
+	}
 	mainLogger.Info("Shutting down...")
 	return 0
 }
