@@ -8,7 +8,7 @@ By default the application listens on 127.0.0.1:18080.
 
 ## Features
 
-* Cross-platform (Windows/Mac OS/Linux/Android (via shell)/\*BSD)
+* Cross-platform (Windows7 need patch/Windows 10+/Mac OS/Linux/Android (via shell)/\*BSD)
 * Uses TLS for secure communication with upstream proxies
 * Zero configuration
 * Simple and straightforward
@@ -18,6 +18,20 @@ By default the application listens on 127.0.0.1:18080.
 #### Binaries
 
 Pre-built binaries are available [here](https://github.com/Alexey71/opera-proxy/releases/latest).
+
+## Launching in Windows 7
+On Windows 7, you'll see this error when you launch the program. This means that Go 1.21+ is no longer supported on Windows 7.
+You need to patch the opera-proxy binary file, for example with this [link-patch1](https://github.com/stunndard/golangwin7patch) [link-patch2](https://github.com/i486/VxKex) [link-patch3](https://github.com/YuZhouRen86/VxKex-NEXT)
+```
+opera-proxy.windows-amd64.exe
+Exception 0xc0000005 0x8 0x0 0x0
+PC=0x0
+internal/runtime/syscall/windows.asmstdcall(0x7ff01040013)
+internal/runtime/syscall/windows/asm_windows_amd64.s:68 +0x89 fp=0x3df89
+0 sp=0x3df870 pc=0x13f072229
+rax     0x0
+.......
+```
 
 #### Build from source
 
