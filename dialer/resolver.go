@@ -40,7 +40,7 @@ func (d *ResolvingDialer) DialContext(ctx context.Context, network, address stri
 	case "udp6", "tcp6", "ip6":
 		resolveNetwork = "ip6"
 	case "udp", "tcp", "ip":
-		resolveNetwork = "ip"
+		resolveNetwork = "ip4"
 	default:
 		return nil, fmt.Errorf("resolving dial %q: unsupported network %q", address, network)
 	}
